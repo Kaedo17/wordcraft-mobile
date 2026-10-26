@@ -26,6 +26,8 @@ mod apple_events;
 #[cfg(not(target_os = "android"))]
 mod clipboard;
 mod control_server;
+// Android: no desktop file manager to register with (its hook is desktop-only).
+#[cfg(not(target_os = "android"))]
 mod default_apps;
 // Android: rfd (the native file dialogs) has no backend for the target either; the app's own file
 // browser serves those commands instead (a later step).
@@ -34,6 +36,8 @@ mod file_dialogs;
 #[cfg(any(target_os = "windows", target_os = "macos", test))]
 mod graphics;
 mod logging;
+// Android: no system spooler to list printers from or submit jobs to.
+#[cfg(not(target_os = "android"))]
 mod print;
 mod region;
 #[cfg(target_os = "macos")]
@@ -68,6 +72,9 @@ impl eframe::App for App {
     /// fits or rescues the window and maximizes it after opening, then gates a close or quit request
     /// on unsaved changes and active printing.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Android has no dialogs to show from the frame (`file_dialogs` is desktop).
+        #[cfg(target_os = "android")]
+        let _ = frame;
         #[cfg(target_os = "macos")]
         apple_events::poll(&self.apple_events, &mut self.app, ctx);
         self.app.logic(ctx);
@@ -135,8 +142,13 @@ impl eframe::App for App {
         self.app.ui(ui);
         #[cfg(not(target_os = "android"))]
         self.dialogs.show(frame);
+        // Android has no dialogs to show from the frame (`file_dialogs` is desktop).
+        #[cfg(target_os = "android")]
+        let _ = frame;
     }
     fn on_exit(&mut self) {
+        // Android has no system spooler (`print` is desktop): nothing pending to finish.
+        #[cfg(not(target_os = "android"))]
         print::finish_pending_jobs();
         self.app.session.finish_recovery();
         save_prefs(&self.app);
@@ -181,9 +193,37 @@ fn schedule_macos_terminate(app: &mut WordApp, key_file: Option<&control_server:
     });
 }
 
+/// Android's resolved settings folder (the activity's app-private storage; [`run_inner`] sets it
+/// before anything reads it), `None` until then and when the activity offers no path.
+#[cfg(target_os = "android")]
+static ANDROID_SETTINGS: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+/// The settings folder resolved on Android: `Some` once [`run_inner`] resolved the app-private
+/// storage, `None` when there is none. Desktop never sets the cell and reads the environment.
+#[cfg(target_os = "android")]
+fn android_settings_dir() -> Option<std::path::PathBuf> {
+    ANDROID_SETTINGS.get().unwrap_or(&None).clone()
+}
+
+/// The settings folder (preferences, logs, the control key, the user dictionary, user fonts,
+/// templates, recovery): on Android the app-private storage resolved at start-up, otherwise
+/// macOS `~/Library/Application Support/WordCraft`, Windows `%APPDATA%\WordCraft`, or
+/// `$XDG_CONFIG_HOME/wordcraft` (`wordcraft_control_key::settings_dir` — Android has no
+/// equivalent: `HOME` and `XDG_CONFIG_HOME` are unset there).
+fn settings_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        android_settings_dir()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        wordcraft_control_key::settings_dir()
+    }
+}
+
 /// `ui.json` in the settings folder, which the MCP bridge also uses to find the control key.
 fn prefs_path() -> Option<std::path::PathBuf> {
-    wordcraft_control_key::settings_dir().map(|b| b.join("ui.json"))
+    settings_dir().map(|b| b.join("ui.json"))
 }
 
 /// Where the log files live: `logs` in the preferences folder (see `logging`).
@@ -193,7 +233,7 @@ fn log_dir() -> Option<std::path::PathBuf> {
 
 /// `custom-dictionary.txt` in the settings folder: the words Add to Dictionary kept (#40).
 fn user_dict_path() -> Option<std::path::PathBuf> {
-    wordcraft_control_key::settings_dir().map(|b| b.join(wordcraft_engine::Session::USER_DICT_FILE))
+    settings_dir().map(|b| b.join(wordcraft_engine::Session::USER_DICT_FILE))
 }
 
 fn load_user_dictionary(app: &mut WordApp) {
@@ -229,7 +269,7 @@ fn load_user_fonts() {
     if !prefs_enabled() {
         return;
     }
-    let Some(dir) = wordcraft_control_key::settings_dir().map(|d| d.join("fonts")) else { return };
+    let Some(dir) = settings_dir().map(|d| d.join("fonts")) else { return };
     let (loaded, skipped) = wordcraft_fonts::FontDb::global().load_user_fonts(&dir);
     if !loaded.is_empty() || !skipped.is_empty() {
         log::info!("user fonts: {} loaded, {} skipped from {}", loaded.len(), skipped.len(), dir.display());
@@ -300,7 +340,7 @@ fn services(file_dialog: FileDialog, ctx: &egui::Context) -> Services {
         #[cfg(not(target_os = "android"))]
         make_default_app: default_apps::hook(),
         // Personal templates live in `Templates` in the settings folder (#2852), made on first save.
-        templates_dir: wordcraft_control_key::settings_dir().map(|d| d.join("Templates")),
+        templates_dir: settings_dir().map(|d| d.join("Templates")),
         animations_enabled: Some(animations::hook(ctx)),
         #[cfg(not(target_os = "android"))]
         clipboard_text: Some(Box::new(clipboard::text)),
@@ -330,6 +370,8 @@ fn app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(png).map_err(|e| log::warn!("app icon: {e}")).ok()
 }
 
+// Desktop only: Android has no command line, so nothing prints the usage text.
+#[cfg(not(target_os = "android"))]
 const USAGE: &str = "\
 wordcraft — the WordCraft desktop app
 
@@ -351,6 +393,7 @@ fn build_sha() -> &'static str {
 
 /// The arguments as text, and apart the files whose names aren't valid Unicode, such as a Latin-1
 /// one (#1440). A `--control` port that isn't is an error.
+#[cfg(not(target_os = "android"))]
 fn text_args() -> (Vec<String>, Vec<std::path::PathBuf>) {
     let (mut args, mut files) = (Vec::new(), Vec::new());
     for (i, a) in std::env::args_os().skip(1).enumerate() {
@@ -383,9 +426,11 @@ fn open_non_unicode(app: &mut WordApp, path: &std::path::Path) {
     }
 }
 
-/// What the command line asked for (desktop; Android has none).
+/// What the command line asked for. Android has no command line, so its launch is always the
+/// default [`Launch::Run`].
 enum Launch {
     /// `--version` or `--help` already printed: [`run`] returns `Ok(())`.
+    #[cfg(not(target_os = "android"))]
     Done,
     /// Run the app: the control port, `--sample`, the files whose names are valid Unicode, and
     /// those whose names aren't (#1440).
@@ -468,6 +513,11 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
     // First, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     logging::install_panic_hook();
+    // Android: resolve the app-private storage once, before anything reads the settings folder —
+    // preferences, logs, recovery, user fonts, templates and the control server all hang off it.
+    // Desktop keeps its environment resolution (`wordcraft_control_key::settings_dir`).
+    #[cfg(target_os = "android")]
+    let _ = ANDROID_SETTINGS.set(android_app.as_ref().and_then(|app| app.internal_data_path().map(|p| p.to_path_buf())));
     // Android has no command line: the phone's launch is the default one — no control server, no
     // sample, no files to open (the app starts on File › Home).
     #[cfg(target_os = "android")]
@@ -476,6 +526,7 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
     let launch = launch_args();
     let (control_port, sample, files, other_files) = match launch {
         Launch::Run { control_port, sample, files, other_files } => (control_port, sample, files, other_files),
+        #[cfg(not(target_os = "android"))]
         Launch::Done => return Ok(()),
     };
     // The log file lives in the settings directory, next to the preferences; opened after the
@@ -576,7 +627,7 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
             }
             app.watch_desktop_theme(&cc.egui_ctx);
             if prefs_enabled()
-                && let Some(dir) = wordcraft_control_key::settings_dir()
+                && let Some(dir) = settings_dir()
             {
                 let ctx = cc.egui_ctx.clone();
                 if let Err(e) = app.session.enable_recovery(dir.join("recovery"), std::sync::Arc::new(move || ctx.request_repaint())) {
@@ -593,7 +644,7 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
             }
             let mut key_file = None;
             if let Some(port) = control_port
-                && let Some((rx, file)) = control_server::start(port, cc.egui_ctx.clone(), wordcraft_control_key::settings_dir().as_deref())
+                && let Some((rx, file)) = control_server::start(port, cc.egui_ctx.clone(), settings_dir().as_deref())
             {
                 app = app.with_control(rx);
                 key_file = file;

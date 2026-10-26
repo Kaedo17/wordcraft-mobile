@@ -6682,6 +6682,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wordcraft-android"
+version = "0.11.0"
+dependencies = [
+ "android-activity",
+ "log",
+ "wordcraft",
+]
+
+[[package]]
 name = "wordcraft-cli"
 version = "0.11.0"
 dependencies = [
