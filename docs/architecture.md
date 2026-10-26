@@ -1,6 +1,6 @@
 # WordCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (Android: the app is a library and `wordcraft-android` is the NativeActivity entry crate; previously minor: `proof` is per language: English and Polish) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (Android: host-provided storage serves every file command in the built-in browser; previously minor: the app is a library and `wordcraft-android` is the NativeActivity entry crate) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 How WordCraft is built today (origin/main `40c5d51`). The longer design notes in
 `plan/architecture.md` are gitignored and local to the original author's machine; this file is the
@@ -57,6 +57,29 @@ Its manifest (`package.metadata.android`) carries the APK identity, the SDK leve
    an egui/wgpu canvas; PDF export walks the same display list through `pdf`.
 5. **Save:** `engine::io` picks a writer by extension.
 
+## Host-provided storage (Android)
+
+A host with no system file picker tells the app where its files live through [`Services`](#layers)
+instead of a `cfg` in the dialogs: with `app_files_dir` set, every file command — Open, Save As,
+Export, Insert Picture, recipients, Save as Template — is served by the built-in
+[`file_browser`](../crates/ui-egui/src/file_browser.rs) (the #576 browser the desktop already had),
+which opens on the frame the command asks and answers exactly as the system dialog would. The
+browser's navigation is clamped inside the host's roots: *Up one level* stops at the root it is in,
+the home-folder button goes to the app's `Documents` folder, and a typed pick outside the roots is
+refused as not found. The shared-storage switcher (a second root beside the app's own, entered only
+while the host's grant hooks say access is held) is drawn only while a host offers one — the
+Android build starts offering it with the "All files access" hooks in the next step of the series.
+
+The Android build splits its app-private data directory once (`apps/wordcraft/src/android_storage.rs`):
+
+```text
+<files>/Documents/  where the browser starts and saves land
+<files>/config/     the settings folder: preferences, logs, the user dictionary, user fonts,
+                    templates, recovery and the control key
+```
+
+A host with a system picker (desktop, web) sets nothing and behaves exactly as before.
+
 ## Testing and gates
 
 - 821 `#[test]` functions and 10 property-test blocks: model, layout, DOCX round-trip and hostile
@@ -73,6 +96,7 @@ Its manifest (`package.metadata.android`) carries the APK identity, the SDK leve
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | Android: `Services::app_files_dir` serves every file command in the built-in file browser, clamped to the host's roots (shared storage waits for the grant hooks); the app-private storage splits into `Documents/` and `config/` |
 | 2026-10-26 | minor | Android groundwork: `apps/wordcraft` is a library (`wordcraft::run`/`run_android`) with the desktop binary as a shim, and `apps/wordcraft-android` is the NativeActivity entry crate whose app-private storage resolves the settings folder |
 | 2026-10-10 | minor | `proof`: proofing languages (English, Polish), affix engine, Polish patterns; layout and engine route each run by its language |
 | 2026-10-10 | major | First committed architecture doc, from the crates' sources and `AGENTS.md` |

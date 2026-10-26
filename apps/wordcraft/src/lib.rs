@@ -25,6 +25,8 @@ mod apple_events;
 // backend for the target (it does not compile there); egui's text clipboard serves Copy/Paste.
 #[cfg(not(target_os = "android"))]
 mod clipboard;
+// Android's app-private storage (pure path logic, unit-tested on the host).
+mod android_storage;
 mod control_server;
 // Android: no desktop file manager to register with (its hook is desktop-only).
 #[cfg(not(target_os = "android"))]
@@ -193,16 +195,24 @@ fn schedule_macos_terminate(app: &mut WordApp, key_file: Option<&control_server:
     });
 }
 
-/// Android's resolved settings folder (the activity's app-private storage; [`run_inner`] sets it
-/// before anything reads it), `None` until then and when the activity offers no path.
+/// Android's resolved app-private storage ([`android_storage::Layout`]); `None` until
+/// [`run_inner`] resolved it, and when the activity offers no path.
 #[cfg(target_os = "android")]
-static ANDROID_SETTINGS: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+static ANDROID_STORAGE: std::sync::OnceLock<Option<android_storage::Layout>> = std::sync::OnceLock::new();
 
-/// The settings folder resolved on Android: `Some` once [`run_inner`] resolved the app-private
-/// storage, `None` when there is none. Desktop never sets the cell and reads the environment.
+/// The settings folder resolved on Android: `config` under the app-private storage, `Some` once
+/// [`run_inner`] resolved it, `None` when there is none. Desktop never sets the cell and reads
+/// the environment.
 #[cfg(target_os = "android")]
 fn android_settings_dir() -> Option<std::path::PathBuf> {
-    ANDROID_SETTINGS.get().unwrap_or(&None).clone()
+    ANDROID_STORAGE.get().and_then(|l| l.as_ref()).map(|l| l.config.clone())
+}
+
+/// The app-private root the in-app browser may reach, resolved on Android (the
+/// `Services::app_files_dir` the app creator wires). Desktop has none.
+#[cfg(target_os = "android")]
+fn android_storage_base() -> Option<std::path::PathBuf> {
+    ANDROID_STORAGE.get().and_then(|l| l.as_ref()).map(|l| l.base.clone())
 }
 
 /// The settings folder (preferences, logs, the control key, the user dictionary, user fonts,
@@ -326,11 +336,15 @@ fn write_prefs(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 ///
 /// Android passes `None` for the dialogs: rfd, arboard and the spooler's printer list have no
 /// backend for the target (they do not compile there, or find nothing to list), so the file
-/// commands are served by the app's own file browser (a later step) and egui's text clipboard
-/// serves Copy and Paste.
+/// commands are served by the app's own file browser over the app-private storage
+/// ([`android_storage`]) and egui's text clipboard serves Copy and Paste.
 fn services(file_dialog: FileDialog, ctx: &egui::Context) -> Services {
     Services {
         file_dialog,
+        // Android: the in-app browser walks the app-private storage; shared storage waits for
+        // the "All files access" grant hooks (a later step).
+        #[cfg(target_os = "android")]
+        app_files_dir: android_storage_base(),
         #[cfg(not(target_os = "android"))]
         printers: Some(print::discover()),
         #[cfg(not(target_os = "android"))]
@@ -513,11 +527,21 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
     // First, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     logging::install_panic_hook();
-    // Android: resolve the app-private storage once, before anything reads the settings folder —
-    // preferences, logs, recovery, user fonts, templates and the control server all hang off it.
+    // Android: split the app-private storage once, before anything reads the settings folder —
+    // preferences, logs, recovery, user fonts, templates and the control server all hang off
+    // `config`, and the in-app browser walks the root (and shared storage, a later step).
     // Desktop keeps its environment resolution (`wordcraft_control_key::settings_dir`).
     #[cfg(target_os = "android")]
-    let _ = ANDROID_SETTINGS.set(android_app.as_ref().and_then(|app| app.internal_data_path().map(|p| p.to_path_buf())));
+    {
+        let layout = android_app.as_ref().and_then(|app| app.internal_data_path().as_deref().map(android_storage::layout));
+        let _ = ANDROID_STORAGE.set(layout.clone());
+        if let Some(l) = layout.as_ref() {
+            match android_storage::ensure(l) {
+                Ok(()) => log::info!("android storage: {}", l.base.display()),
+                Err(e) => log::warn!("android storage: {e}"),
+            }
+        }
+    }
     // Android has no command line: the phone's launch is the default one — no control server, no
     // sample, no files to open (the app starts on File › Home).
     #[cfg(target_os = "android")]
