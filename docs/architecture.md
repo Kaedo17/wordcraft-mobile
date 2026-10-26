@@ -1,6 +1,6 @@
 # WordCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (Android: the entry crate's JNI offers shared storage as the browser's second root; previously minor: host-provided storage serves every file command in the built-in browser) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (Android: input — the vendored winit's mouse path, the stamped keyboard modifiers and the canvas's touch arbiter (a finger pans the page, a still hold is the long-press menu, a tap places the caret); previously minor: Android: the entry crate's JNI offers shared storage as the browser's second root; previously minor: host-provided storage serves every file command in the built-in browser) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 How WordCraft is built today (origin/main `40c5d51`). The longer design notes in
 `plan/architecture.md` are gitignored and local to the original author's machine; this file is the
@@ -85,6 +85,34 @@ The Android build splits its app-private data directory once (`apps/wordcraft/sr
 
 A host with a system picker (desktop, web) sets nothing and behaves exactly as before.
 
+## Input (Android)
+
+Two layers make a keyboard and mouse usable there, and a third arbitrates touch. winit — the
+pinned `storytold/winit` fork eframe 0.37 builds against — reports no modifier state on Android
+(it ignores the meta state the OS carries on every key event, so egui-winit never learns
+`Ctrl`/`Shift`/`Alt` and a chord degrades into its plain key: the chord's letter arrives alone
+and types itself into the document), and it drops every motion action that is not a touch
+(upstream's `// TODO mouse events`; 0.31 is still in beta), so a mouse attached to the device —
+Bluetooth, USB or DeX — has no hover, no wheel and no right or middle button. The workspace
+therefore vends winit with that mouse path filled in
+([third_party/winit](../third_party/winit/README.md): one Android-only file, routed through
+`[patch.crates-io]`; every other target compiles the published crate byte-for-byte) and stamps
+the modifier keys onto each frame's key events itself (`stamp_android_modifiers` in `ui-egui`,
+driven from `raw_input_hook` before egui builds its input state). Touch and touch-dragged
+stylus input is untouched in both layers.
+
+The canvas arbitrates a finger press on the page (`mod touch` in
+[canvas.rs](../crates/ui-egui/src/canvas.rs), FilmCraft's touch arbiter cut to the canvas's one
+case — no rows to pick up, no sideways controls). A finger that moves past egui's click distance
+pans the page through the canvas's own scroll — the same `clamped_scroll` the wheel uses, the
+delta fed before the pass so the page follows the finger the frame it moves; a still hold past
+egui's long-press belongs to the context menu, which the menu paths already answer from the
+synthesized secondary click; a quick release stays egui's click — a tap places the caret, a
+double-tap selects a word. A mouse press is never arbitrated, so the desktop keeps its
+drag-select byte for byte, and the three drag-growth branches (columns, units, plain select)
+stand down for touch entirely. Options › General offers a 50% interface size for a small tablet
+or phone.
+
 ## Testing and gates
 
 - 821 `#[test]` functions and 10 property-test blocks: model, layout, DOCX round-trip and hostile
@@ -101,6 +129,7 @@ A host with a system picker (desktop, web) sets nothing and behaves exactly as b
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | Android input: the vendored winit fills the Android mouse path, keyboard modifiers are stamped per frame, and the canvas arbitrates a finger press (pan / long-press menu / tap); the 50% interface size documented |
 | 2026-10-26 | minor | Android: the entry crate's JNI offers shared storage (`/storage/emulated/0`) as the browser's second root — the grant checked and asked for over JNI, the manifest declaring `MANAGE_EXTERNAL_STORAGE` |
 | 2026-10-26 | minor | Android: `Services::app_files_dir` serves every file command in the built-in file browser, clamped to the host's roots (shared storage waits for the grant hooks); the app-private storage splits into `Documents/` and `config/` |
 | 2026-10-26 | minor | Android groundwork: `apps/wordcraft` is a library (`wordcraft::run`/`run_android`) with the desktop binary as a shim, and `apps/wordcraft-android` is the NativeActivity entry crate whose app-private storage resolves the settings folder |
