@@ -17,6 +17,11 @@
 
 use std::path::{Path, PathBuf};
 
+/// Shared internal storage's root on Android: the in-app browser's second root
+/// (`Services::shared_storage_root`), entered only while the "All files access" grant holds —
+/// `apps/wordcraft-android`'s `android_access.rs` checks and asks for it over JNI.
+pub const SHARED_ROOT: &str = "/storage/emulated/0";
+
 /// The storage folders below the app-private base directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layout {

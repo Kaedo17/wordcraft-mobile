@@ -1,6 +1,6 @@
 # WordCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (Android: host-provided storage serves every file command in the built-in browser; previously minor: the app is a library and `wordcraft-android` is the NativeActivity entry crate) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (Android: the entry crate's JNI offers shared storage as the browser's second root; previously minor: host-provided storage serves every file command in the built-in browser) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 How WordCraft is built today (origin/main `40c5d51`). The longer design notes in
 `plan/architecture.md` are gitignored and local to the original author's machine; this file is the
@@ -38,9 +38,13 @@ winit or rfd.
 unmangled `android_main`, which opens the shared app library (`wordcraft::run_android`, the same code
 the desktop binary runs). The unmangled export is why that crate does not inherit the workspace
 lints: edition 2024 spells it `#[unsafe(no_mangle)]` and there is no safe spelling of a required
-export symbol, so the crate carries the workspace's clippy denials itself and holds no unsafe code.
-Its manifest (`package.metadata.android`) carries the APK identity, the SDK levels and the activity's
-`configChanges`; the app-private storage it resolves hands the shared library its settings folder.
+export symbol, so the crate carries the workspace's clippy denials itself. Its one piece of
+`unsafe` (named in AGENTS.md) is `android_access.rs`: JNI to the activity's raw JVM that only
+checks whether Android's "All files access" grant is held and opens the system page that asks for
+it — the shared library receives the plain closures (`wordcraft::SharedStorageAccess`) and holds
+none itself. The crate's manifest (`package.metadata.android`) carries the APK identity, the SDK
+levels, the activity's `configChanges` and the shared-storage permissions; the app-private
+storage it resolves hands the shared library its settings folder.
 
 ## Data flow
 
@@ -66,9 +70,10 @@ Export, Insert Picture, recipients, Save as Template — is served by the built-
 which opens on the frame the command asks and answers exactly as the system dialog would. The
 browser's navigation is clamped inside the host's roots: *Up one level* stops at the root it is in,
 the home-folder button goes to the app's `Documents` folder, and a typed pick outside the roots is
-refused as not found. The shared-storage switcher (a second root beside the app's own, entered only
-while the host's grant hooks say access is held) is drawn only while a host offers one — the
-Android build starts offering it with the "All files access" hooks in the next step of the series.
+refused as not found. The shared-storage switcher (a second root beside the app's own) is drawn
+while a host offers one — the Android build offers `/storage/emulated/0`, entered only while the
+user's "All files access" grant holds: the grant is checked over JNI at every tap, and a tap that
+finds it un-granted opens Android's settings page instead of navigating.
 
 The Android build splits its app-private data directory once (`apps/wordcraft/src/android_storage.rs`):
 
@@ -96,6 +101,7 @@ A host with a system picker (desktop, web) sets nothing and behaves exactly as b
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | Android: the entry crate's JNI offers shared storage (`/storage/emulated/0`) as the browser's second root — the grant checked and asked for over JNI, the manifest declaring `MANAGE_EXTERNAL_STORAGE` |
 | 2026-10-26 | minor | Android: `Services::app_files_dir` serves every file command in the built-in file browser, clamped to the host's roots (shared storage waits for the grant hooks); the app-private storage splits into `Documents/` and `config/` |
 | 2026-10-26 | minor | Android groundwork: `apps/wordcraft` is a library (`wordcraft::run`/`run_android`) with the desktop binary as a shim, and `apps/wordcraft-android` is the NativeActivity entry crate whose app-private storage resolves the settings folder |
 | 2026-10-10 | minor | `proof`: proofing languages (English, Polish), affix engine, Polish patterns; layout and engine route each run by its language |

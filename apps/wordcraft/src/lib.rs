@@ -338,11 +338,11 @@ fn write_prefs(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 /// backend for the target (they do not compile there, or find nothing to list), so the file
 /// commands are served by the app's own file browser over the app-private storage
 /// ([`android_storage`]) and egui's text clipboard serves Copy and Paste.
-fn services(file_dialog: FileDialog, ctx: &egui::Context) -> Services {
-    Services {
+fn services(file_dialog: FileDialog, ctx: &egui::Context, access: Option<&SharedStorageAccess>) -> Services {
+    let mut s = Services {
         file_dialog,
-        // Android: the in-app browser walks the app-private storage; shared storage waits for
-        // the "All files access" grant hooks (a later step).
+        // Android: the in-app browser walks the app-private storage below, and shared storage
+        // (the second root) hangs off the grant hooks from `access`.
         #[cfg(target_os = "android")]
         app_files_dir: android_storage_base(),
         #[cfg(not(target_os = "android"))]
@@ -367,7 +367,20 @@ fn services(file_dialog: FileDialog, ctx: &egui::Context) -> Services {
         #[cfg(not(target_os = "android"))]
         clipboard_formats: Some(Box::new(clipboard::formats)),
         ..Default::default()
+    };
+    // Shared storage is Android's second browser root: the switcher between the app-private tree
+    // and `/storage/emulated/0`, entered only while the "All files access" grant holds (the
+    // closures re-check it at every tap and open the system page that grants it — the entry
+    // crate's JNI). The desktop and the web have their own pickers, so `access` is `None` there,
+    // no switcher is drawn, and every hook stays unset — exactly as before.
+    s.shared_storage_root = cfg!(target_os = "android").then(|| std::path::PathBuf::from(android_storage::SHARED_ROOT));
+    if let Some(a) = access {
+        let granted = std::sync::Arc::clone(&a.granted);
+        s.shared_storage_granted = Some(Box::new(move || granted()));
+        let ask = std::sync::Arc::clone(&a.ask);
+        s.shared_storage_grant = Some(Box::new(move || ask()));
     }
+    s
 }
 
 /// `Services::file_dialog`'s hook type (`wordcraft_ui_egui` owns it); the desktop's `file_dialogs`
@@ -494,31 +507,47 @@ fn launch_args() -> Launch {
 }
 
 /// Open the window and run the app until its window closes. The desktop binary calls this from
-/// `main`; Android's NativeActivity entry point (a later step, `apps/wordcraft-android`) calls
-/// [`run_android`] from `android_main`.
+/// `main`; Android's NativeActivity entry crate (`apps/wordcraft-android`) calls [`run_android`]
+/// from `android_main`.
 pub fn run() -> eframe::Result {
     #[cfg(target_os = "android")]
     {
-        run_inner(None)
+        run_inner(None, None)
     }
     #[cfg(not(target_os = "android"))]
     {
-        run_inner()
+        run_inner(None)
     }
 }
 
+/// Android's shared-storage capabilities, built by the entry crate — which owns the JNI to the
+/// activity's JVM, since AGENTS.md (Never crash) confines that `unsafe` to its
+/// `android_access.rs` — and handed to the in-app file browser as plain hooks: whether shared
+/// storage may be browsed right now, and how to ask for the grant. `None` when the entry crate
+/// could not reach the JVM: the browser then keeps its app-private root. Cloneable, because the
+/// app creator borrows the value once and each hook takes one of the closures behind it.
+#[derive(Clone)]
+pub struct SharedStorageAccess {
+    /// Whether the grant holds right now (re-checked whenever the browser shows the root).
+    pub granted: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Ask for it: the system settings page on Android 11+, the permission dialog before that.
+    pub ask: std::sync::Arc<dyn Fn() + Send + Sync>,
+}
+
 /// Android's entry: like [`run`], but with the activity's handle, which eframe's event loop
-/// cannot be created without — leaving it out ends the activity as soon as it starts.
+/// cannot be created without — leaving it out ends the activity as soon as it starts — and with
+/// the optional shared-storage capabilities ([`SharedStorageAccess`]) the entry crate resolved
+/// through JNI.
 #[cfg(target_os = "android")]
-pub fn run_android(android_app: android_activity::AndroidApp) -> eframe::Result {
-    run_inner(Some(android_app))
+pub fn run_android(android_app: android_activity::AndroidApp, access: Option<SharedStorageAccess>) -> eframe::Result {
+    run_inner(Some(android_app), access)
 }
 
 /// Shared startup; `android_app` is the NativeActivity handle eframe needs on Android. Parses the
 /// command line (desktop), installs logging and the panic hook, restores preferences and window
 /// geometry, opens requested documents or the Start screen, starts the control server when
 /// asked, and runs the eframe event loop.
-fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity::AndroidApp>) -> eframe::Result {
+fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity::AndroidApp>, access: Option<SharedStorageAccess>) -> eframe::Result {
     // Windows: the update helper is a copy of this program started with `--finish-update`.
     #[cfg(windows)]
     if let Some(result) = craft_update::self_update::finish(&craft_update::suite::WORDCRAFT, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
@@ -639,7 +668,7 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
             let file_dialog: FileDialog = None;
             let mut session = Session::new(doc);
             session.system_region = region;
-            let mut app = WordApp::new(session, services(file_dialog, &cc.egui_ctx));
+            let mut app = WordApp::new(session, services(file_dialog, &cc.egui_ctx, access.as_ref()));
             app.set_startup_update_check(true);
             load_prefs(&mut app);
             load_user_dictionary(&mut app);
