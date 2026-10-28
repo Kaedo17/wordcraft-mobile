@@ -1,6 +1,6 @@
 # Hardware parity with Microsoft Word
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-28 · **Change:** minor (Android: the touch surface — page pan, long-press menu, tap, double-tap — and stamped keyboard chords, Tab S11-verified; previously trivial: Pen / stylus row: two-stroke and closed-head arrows; previously trivial: Pen / stylus row: ink, eraser and Ink to Shape incl. arrows landed; previously trivial: a window too big for its screen shrinks to fit when it opens, #1215; previously trivial: 32-bit Windows starts on OpenGL; previously major: first version) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4 and Word for Windows
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-29 · **Change:** minor (Android (Tab S11, plus a device pass on a second device, AGS5-W09): the touch surface — page pan, long-press menu, tap, double-tap and the selection's handles — and stamped keyboard chords; previously trivial: Pen / stylus row: two-stroke and closed-head arrows; previously trivial: Pen / stylus row: ink, eraser and Ink to Shape incl. arrows landed; previously trivial: a window too big for its screen shrinks to fit when it opens, #1215; previously trivial: 32-bit Windows starts on OpenGL; previously major: first version) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4 and Word for Windows
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -31,13 +31,19 @@ stamped onto each frame's key events, so chords reach egui (the on-device pass e
 no Bluetooth keyboard was attached), and the vendored winit fills Android's mouse path, so a mouse
 attached to the tablet keeps hover, wheel and right button (exercised by host tests; no mouse was
 attached on device); its primary button is deduped, because devices report a click through both
-Android's Down/Up and ButtonPress/Release pairs, and one physical click must be one click. Options ›
+Android's Down/Up and ButtonPress/Release pairs, and one physical click must be one click — and the
+button that changed comes from a diff of the button state, not `AMotionEvent_getActionButton` (an
+API 33 symbol some devices' `libandroid` omits, which failed the whole library to load on an API 31
+Huawei MediaPad, AGS5-W09). A tap so fast its down and up reach the app in one pass still counts as
+touch, and a handle dragged onto the selection's other end keeps the drag alive (both handles stack
+at the caret, as Word's do) so pulling past regrows the selection the other way. Options ›
 General offers a 50% interface size for the tablet's 2560×1600 landscape screen.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Android (Huawei MediaPad, AGS5-W09, API 31, device pass): the whole touch selection surface verified on device — double-tap, long-press, both handle drags, a crossing drag past the other end, tap-away collapse, menu Cut, pan — plus two fixes it found: the library failed to load on API 31 (`AMotionEvent_getActionButton`), and a fast tap's down/up sharing a pass disarmed the handles |
 | 2026-10-28 | minor | Android: touch selection handles (a touch-made selection grows by dragging its ends), a long-press selects the word under the hold as well as opening the menu, and the mouse's primary button is deduped (one physical click is one click) |
 | 2026-10-26 | minor | Android (Tab S11): the touch surface — page pan, long-press menu, tap and double-tap — and stamped keyboard modifiers verified on device; no Bluetooth keyboard or mouse was attached |
 | 2026-10-15 | trivial | Pen / stylus row: Ink to Shape also makes two-stroke arrows and arrows with a closed triangle head |
