@@ -78,6 +78,9 @@ pub struct CanvasState {
     /// A drag after a double-click, triple-click or Ctrl/⌘+click: the unit it extends by, the
     /// unit first selected, and the last position the pointer hit.
     unit_drag: Option<UnitDrag>,
+    /// The selection was made by touch (a double-tap or a handle drag), so its two handles
+    /// show: dragging one moves that end, as on Android. A mouse click clears it.
+    pub touch_sel: bool,
     pub last_highlight: String,
     pub last_font_color: String,
     pub last_shading: String,
@@ -371,6 +374,7 @@ impl Default for CanvasState {
             drawn_ibeam: crate::ibeam::DRAWN,
             table_preview: None,
             table_preview_layout: None,
+            touch_sel: false,
         }
     }
 }
@@ -425,6 +429,11 @@ pub struct Geometry {
 pub(crate) const WHITE_SPACE_PAD: f32 = 6.0;
 /// The line drawn between two pages when white space is hidden (pixels).
 pub(crate) const SEAM: f32 = 1.0;
+
+/// A touch selection handle (Android): the drop's radius and the spike joining it to the
+/// text, in screen points. The hit target is a fingertip's around both.
+pub(crate) const HANDLE_RADIUS: f32 = 7.0;
+pub(crate) const HANDLE_SPIKE: f32 = 9.0;
 
 /// Hide White Space: stack single-column pages (`rects`, full pages) so that only each page's
 /// text area (`bodies`: top and bottom of the body in points, plus a little room) shows, with a
@@ -1631,6 +1640,9 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         // document-first line may be scrolled offscreen; using it would pin the toolbar to an
         // old screen position unrelated to the visible selection.
         app.canvas.mini_anchor = crate::mini_toolbar::visible_anchor(screen_rects, visible_clip);
+        // Touch selection handles (Android): drawn and hit-tested after the selection and the
+        // canvas's own response, so a press on one is the handle's.
+        selection_handles(app, ui, &painter, &rects, &layout, geo.scale, &t);
         // Content controls: the frame of the one the caret is in (all of them in Design Mode).
         crate::content_controls::paint(app, &painter, &t, &layout, &rects, geo.scale);
         // Read Aloud: the sentence being spoken.
@@ -2603,14 +2615,12 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
         }
         return;
     }
-    // The press already selected the word or paragraph (and a drag may have grown it).
-    let released_clicks = if resp.triple_clicked() {
-        3
-    } else if resp.double_clicked() {
-        2
-    } else {
-        0
-    };
+    // The press already selected the word or paragraph (and a drag may have grown it). The
+    // count is the app's own (position-aware) one, not egui's: egui's triple check looks
+    // only at the time between the last two clicks, so a tap somewhere else just before a
+    // double-tap reads as a triple and would select a paragraph (egui's release count only
+    // agrees with the press's when the presses really were a multi-click run).
+    let released_clicks = if ui.input(|i| i.pointer.any_click()) { app.canvas.last_press.map_or(0, |(_, _, n)| n) } else { 0 };
     if released_clicks > 0 && app.canvas.unit_drag.as_ref().is_some_and(|d| d.clicks == released_clicks) {
         app.canvas.unit_drag = None;
         app.canvas.dragging = false;
@@ -2814,6 +2824,9 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
             let (start, end) = app.session.sel.ordered();
             app.canvas.unit_drag = Some(UnitDrag { unit, clicks, start, end, last: pos });
         }
+        // A touch double-tap (or triple) made the selection: its handles show. A tap or a
+        // mouse press puts them away.
+        app.canvas.touch_sel = clicks > 1 && ui.input(|i| i.any_touches());
         app.session.page_hint = page;
         app.canvas.dragging = true;
         // Format painter applies on mouse up.
@@ -2885,6 +2898,61 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
         egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique("link_tip"), egui::PopupAnchor::Pointer).show(|ui| {
             ui.label(tip);
         });
+    }
+}
+
+/// Touch selection handles (Android): two teardrops hanging under a selection made by
+/// touch; dragging one moves that end, character by character, through `select.range` —
+/// Word on touch has no drag-select, the handles are how a selection grows. The press is
+/// the handle's (allocated after the canvas's own response, so egui's hit test gives it
+/// the press): the canvas under it never selects, pans or long-presses. Mouse-made
+/// selections show no handles (`touch_sel`), so the desktop draws nothing new.
+fn selection_handles(app: &mut WordApp, ui: &mut Ui, painter: &egui::Painter, rects: &[Rect], layout: &DocLayout, scale: f32, t: &Tokens) {
+    if !app.canvas.touch_sel || app.session.sel.is_collapsed() || app.session.view.read_mode || crate::objects::selected(app).is_some() {
+        return;
+    }
+    let (a, b) = app.session.sel.ordered();
+    let story = app.session.sel.focus.story;
+    for (start, pos) in [(true, &a), (false, &b)] {
+        let Some(c) = layout.caret_on(pos, app.session.page_hint) else { continue };
+        let Some(pr) = rects.get(c.page) else { continue };
+        let pscale = layout.pages.get(c.page).map_or(scale, |page| page_screen_scale(*pr, page, scale));
+        let tip = to_screen(pos2(0.0, 0.0), *pr, pscale, c.x, c.top + c.height);
+        let center = tip + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+        // The teardrop: a spike up to the caret's foot and a round drop under it, outlined
+        // in the paper's colour as Word's are.
+        painter.add(egui::Shape::convex_polygon(
+            vec![pos2(tip.x - 3.5, tip.y + HANDLE_SPIKE), pos2(tip.x + 3.5, tip.y + HANDLE_SPIKE), tip],
+            t.selection,
+            Stroke::NONE,
+        ));
+        painter.circle_filled(center, HANDLE_RADIUS, t.selection);
+        painter.circle_stroke(center, HANDLE_RADIUS, Stroke::new(1.0, t.canvas));
+        // The drop plus a fingertip's margin around it and the spike.
+        let hit = Rect::from_min_size(pos2(center.x - 14.0, tip.y - 6.0), vec2(28.0, HANDLE_SPIKE + 2.0 * HANDLE_RADIUS + 20.0));
+        let id = ui.id().with(("selection_handle", if start { "start" } else { "end" }));
+        let r = ui.interact(hit, id, Sense::drag());
+        if r.dragged()
+            && let Some(pp) = r.interact_pointer_pos()
+            // The selection follows the handle's tip, not the finger under the drop: the drop
+            // hangs below the text, and a hit at the finger would take the line below.
+            && let Some((page, x, y)) = page_at(rects, layout, scale, pp - vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS))
+            && let Some(to) = layout.hit(page, x, y, story)
+        {
+            let moved = if start { to != a } else { to != b };
+            if moved {
+                let (anchor, focus) = if start { (to, b.clone()) } else { (a.clone(), to) };
+                let params = json!({
+                    "anchor": serde_json::to_value(&anchor).unwrap_or_default(),
+                    "focus": serde_json::to_value(&focus).unwrap_or_default(),
+                });
+                // Through the session, as the drags do: the app's `run` would scroll on every frame.
+                let _ = app.session.run("select.range", &params);
+                app.session.page_hint = page;
+                app.canvas.touch_sel = true;
+                app.canvas.caret_visible_since = crate::now_ms();
+            }
+        }
     }
 }
 
@@ -3998,6 +4066,7 @@ mod touch {
 mod tests {
     use super::*;
     use crate::table_resize::tests::{H, cell, screen, steps, table_window};
+    use egui::{Event, TouchId, TouchPhase};
 
     /// #3931: while Insert › Table's grid asks for a preview the page is laid out with that
     /// table; the document, its revision and undo history stay as they were, and without a
@@ -8836,5 +8905,199 @@ mod tests {
         let hidden = view_key(&app, false, Some(&object));
         assert_ne!(hidden, view_key(&app, false, None), "the page without the dragged object is rendered again");
         assert_eq!(hidden, view_key(&app, false, Some(&object)), "the same drag keeps the key: no re-render every frame");
+    }
+
+    // --- Touch selection handles (Android: a selection grows by dragging its ends) ---
+
+    /// The device batches a touch phase's events into one pass (egui-winit pushes them
+    /// together) and the selection machinery reads that batched state; kittest runs a pass
+    /// per queued event, which splits them. So these tests drive `run_ui` directly, one
+    /// hand-built `RawInput` per pass, exactly the event batches the device sends.
+    struct TouchBench {
+        ctx: egui::Context,
+        app: WordApp,
+        t: f64,
+    }
+
+    impl TouchBench {
+        fn new(text: &str) -> Self {
+            let mut app = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Default::default());
+            app.run("text.insert", json!({"text": text})).unwrap();
+            app.run("view.commentsPane", json!({"value": false})).unwrap();
+            let mut b = Self { ctx: egui::Context::default(), app, t: 0.0 };
+            for _ in 0..6 {
+                b.pass(vec![]);
+            }
+            b
+        }
+
+        /// One pass: `events` in one batch, a sixtieth of a second later.
+        fn pass(&mut self, events: Vec<Event>) {
+            self.t += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+                time: Some(self.t),
+                events,
+                ..Default::default()
+            };
+            let ctx = self.ctx.clone();
+            let app = &mut self.app;
+            let mut run = ctx.run_ui(input, |ui| {
+                app.logic(&ctx);
+                app.ui(ui);
+            });
+            run.textures_delta.clear();
+        }
+
+        /// The screen point of a document position's line bottom (a handle's tip).
+        fn tip(&mut self, at: &Pos) -> Pos2 {
+            let c = self.app.session.layout().caret_on(at, 0).expect("caret");
+            page_to_screen(&mut self.app, c.page, c.x, c.top + c.height).expect("on screen")
+        }
+
+        /// A finger tap: the touch phase's events as egui-winit pushes them, together, with
+        /// the pointer gone at the end of the release batch.
+        fn tap(&mut self, at: Pos2) {
+            self.pass(vec![
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: at, force: Some(0.5) },
+                Event::PointerMoved(at),
+                Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            ]);
+            self.pass(vec![
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: at, force: Some(0.0) },
+                Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+                Event::PointerGone,
+            ]);
+        }
+
+        /// A finger drag: the press, a few moves, the release.
+        fn touch_drag(&mut self, from: Pos2, to: Pos2) {
+            self.pass(vec![
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: from, force: Some(0.5) },
+                Event::PointerMoved(from),
+                Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            ]);
+            for k in 1..=4 {
+                let p = from + (to - from) * (k as f32 / 4.0);
+                self.pass(vec![
+                    Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Move, pos: p, force: Some(0.5) },
+                    Event::PointerMoved(p),
+                ]);
+            }
+            self.pass(vec![
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: to, force: Some(0.0) },
+                Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+                Event::PointerGone,
+            ]);
+        }
+
+        /// A mouse click (no touch events): the press and its release a frame apart.
+        fn mouse_click(&mut self, at: Pos2) {
+            self.pass(vec![
+                Event::PointerMoved(at),
+                Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            ]);
+            self.pass(vec![
+                Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+                Event::PointerGone,
+            ]);
+        }
+    }
+
+    /// Double-tap selects a word and arms the touch handles (the tap itself still lands
+    /// the caret first); a mouse click never arms them, and clears them again.
+    #[test]
+    fn a_double_tap_arms_the_touch_handles_and_a_mouse_click_disarms_them() {
+        let mut b = TouchBench::new("Alpha beta gamma delta");
+        // A single tap places the caret and never arms the handles.
+        let at = page_to_screen(&mut b.app, 0, 100.0, 100.0).expect("page on screen");
+        b.tap(at);
+        assert!(!b.app.canvas.touch_sel, "a tap is not a selection");
+        assert!(b.app.session.sel.is_collapsed());
+        // Double-tap inside "beta" (off 8) selects the word and arms the handles.
+        let at = {
+            let c = b.app.session.layout().caret_on(&Pos::body(0, 8), 0).expect("caret");
+            page_to_screen(&mut b.app, c.page, c.x + 1.0, c.top + c.height / 2.0).expect("on screen")
+        };
+        b.tap(at);
+        for _ in 0..8 {
+            b.pass(vec![]);
+        }
+        b.tap(at);
+        let (s, e) = b.app.session.sel.ordered();
+        assert_eq!((s, e), (Pos::body(0, 6), Pos::body(0, 11)), "the word and its trailing space");
+        assert!(b.app.canvas.touch_sel, "a touch selection shows its handles");
+        // A mouse click on another word places the caret and disarms the handles.
+        for _ in 0..40 {
+            b.pass(vec![]);
+        }
+        let mouse_at = {
+            let c = b.app.session.layout().caret_on(&Pos::body(0, 13), 0).expect("caret");
+            page_to_screen(&mut b.app, c.page, c.x + 1.0, c.top + c.height / 2.0).expect("on screen")
+        };
+        b.mouse_click(mouse_at);
+        assert!(b.app.session.sel.is_collapsed(), "a click collapses");
+        assert!(!b.app.canvas.touch_sel, "a mouse click never shows handles");
+    }
+
+    /// The scroll-to-caret ease takes about a second; wait for it to settle.
+    fn settle(b: &mut TouchBench) {
+        let mut last = None;
+        let mut stable = 0;
+        for _ in 0..600 {
+            b.pass(vec![]);
+            let s = b.app.canvas.scroll_offset;
+            stable = if last.is_some_and(|l: egui::Vec2| (l - s).length() < 0.5) { stable + 1 } else { 0 };
+            last = Some(s);
+            if stable >= 5 {
+                break;
+            }
+        }
+    }
+
+    /// Dragging a handle moves only its own end, character by character, and never pans
+    /// the page (the press belongs to the handle, not the canvas's arbiter).
+    #[test]
+    fn dragging_the_handles_extends_the_selection_without_panning() {
+        let mut b = TouchBench::new(&(format!("{}\r", "Alpha beta gamma delta").repeat(49) + "Alpha beta gamma delta"));
+        // The caret goes to the document start; the canvas settles with the first line at the
+        // viewport's very top edge, so the test aims a few paragraphs down, well inside the
+        // canvas, and computes the word the double-tap will select the way the canvas
+        // hit-tests (this stays right wherever the settled scroll puts the page).
+        b.app.run("caret.docStart", json!({})).unwrap();
+        settle(&mut b);
+        let at = page_to_screen(&mut b.app, 0, 150.0, 300.0).expect("page on screen");
+        let (s, e) = {
+            let layout = b.app.session.layout();
+            let pos = layout.hit(0, 150.0, 300.0, StoryRef::Body).expect("hit");
+            let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+            (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+        };
+        b.tap(at);
+        for _ in 0..8 {
+            b.pass(vec![]);
+        }
+        b.tap(at);
+        assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+        // The end handle hangs under the selection's end; drag it two characters on, into the
+        // next word. The caret moved, so the view eases again: settle, then aim afresh.
+        settle(&mut b);
+        let to = b.tip(&Pos { off: e.off + 2, ..e.clone() });
+        let from = b.tip(&e) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+        let scroll = b.app.canvas.scroll_offset;
+        b.touch_drag(from, to);
+        let (s2, e2) = b.app.session.sel.ordered();
+        assert_eq!(s2, s, "the start stays");
+        assert_eq!(e2, Pos { off: e.off + 2, ..e.clone() }, "the end follows the handle");
+        assert_eq!(b.app.canvas.scroll_offset, scroll, "a handle drag never pans");
+        // The start handle grows the selection back two characters, the end staying put.
+        settle(&mut b);
+        let to = b.tip(&Pos { off: s.off + 2, ..s.clone() });
+        let from = b.tip(&s2) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+        b.touch_drag(from, to);
+        let (s3, e3) = b.app.session.sel.ordered();
+        assert_eq!(s3, Pos { off: s.off + 2, ..s.clone() }, "the start follows the handle");
+        assert_eq!(e3, e2, "the end stays");
+        assert_eq!(b.app.canvas.scroll_offset, scroll, "still no panning");
     }
 }
