@@ -2626,10 +2626,6 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
     // The press already selected the word or paragraph (and a drag may have grown it). The
     // count is the app's own (position-aware) one, not egui's: egui's triple check looks
     // only at the time between the last two clicks, so a tap somewhere else just before a
-    // double-tap reads as a triple and would select a paragraph (egui's release count only
-    // agrees with the press's when the presses really were a multi-click run).
-    // The count is the app's own (position-aware) one, not egui's: egui's triple check looks
-    // only at the time between the last two clicks, so a tap somewhere else just before a
     // double-tap reads as a triple and would select a paragraph. Single-click releases (the
     // format painter's paste, the drag cleanup) stay with the release path below.
     let released_clicks = if ui.input(|i| i.pointer.any_click()) { app.canvas.last_press.map_or(0, |(_, _, n)| n) } else { 0 };
@@ -2678,10 +2674,17 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
             return;
         }
         let _ = app.run("select.word", json!({}));
+        // A touch double-tap whose press and release shared a pass lands here — the press
+        // block never saw the second press — so the selection's handles arm on release. A
+        // mouse double-click keeps desktop behaviour: no handles.
+        app.canvas.touch_sel = touch_pass(ui);
+        app.canvas.dragging = false;
         return;
     }
     if resp.triple_clicked() {
         let _ = app.run("select.paragraph", json!({"cell": true}));
+        app.canvas.touch_sel = touch_pass(ui);
+        app.canvas.dragging = false;
         return;
     }
     let pressed = ui.input(|i| i.pointer.primary_pressed()) && resp.contains_pointer() && !over_balloon(app, p);
@@ -2838,7 +2841,7 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
         }
         // A touch double-tap (or triple) made the selection: its handles show. A tap or a
         // mouse press puts them away.
-        app.canvas.touch_sel = clicks > 1 && ui.input(|i| i.any_touches());
+        app.canvas.touch_sel = clicks > 1 && touch_pass(ui);
         app.session.page_hint = page;
         app.canvas.dragging = true;
         // Format painter applies on mouse up.
@@ -2918,6 +2921,13 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
 /// Word on touch has no drag-select, the handles are how a selection grows. The press is
 /// the handle's (allocated after the canvas's own response, so egui's hit test gives it
 /// the press): the canvas under it never selects, pans or long-presses. Mouse-made
+/// This pass carries touch: either a finger is down, or touch events arrived in it — a tap
+/// so fast that its down and up reach the app in one pass has already lifted by query time,
+/// but the pass still says touch.
+fn touch_pass(ui: &egui::Ui) -> bool {
+    ui.input(|i| i.any_touches() || i.raw.events.iter().any(|e| matches!(e, egui::Event::Touch { .. })))
+}
+
 /// selections show no handles (`touch_sel`), so the desktop draws nothing new.
 fn selection_handles(app: &mut WordApp, ui: &mut Ui, painter: &egui::Painter, rects: &[Rect], layout: &DocLayout, scale: f32, t: &Tokens) {
     if !app.canvas.touch_sel || app.session.sel.is_collapsed() || app.session.view.read_mode || crate::objects::selected(app).is_some() {
@@ -8990,6 +9000,19 @@ mod tests {
             ]);
         }
 
+        /// A tap so fast that its down and up reach the app in one pass (an injected tap
+        /// does; the pump delivers both before the frame runs): every event at once.
+        fn fast_tap(&mut self, at: Pos2) {
+            self.pass(vec![
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: at, force: Some(0.5) },
+                Event::PointerMoved(at),
+                Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: at, force: Some(0.0) },
+                Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+                Event::PointerGone,
+            ]);
+        }
+
         /// A finger drag: the press, a few moves, the release.
         fn touch_drag(&mut self, from: Pos2, to: Pos2) {
             self.pass(vec![
@@ -9244,5 +9267,28 @@ mod tests {
         assert_eq!(b.app.session.sel.ordered(), (s, e), "the word under the hold");
         assert!(b.app.canvas.touch_sel, "the hold's selection shows its handles");
         assert!(b.app.canvas.context_menu_open, "the menu is open over it");
+    }
+
+    /// A tap so fast its down and up land in one pass (an injected tap, or a very quick
+    /// finger) still counts as touch: the double-tap's word shows its handles.
+    #[test]
+    fn a_fast_tap_whose_down_and_up_share_a_pass_still_arms_the_handles() {
+        let mut b = TouchBench::new("Alpha beta gamma delta");
+        b.app.run("caret.docStart", json!({})).unwrap();
+        settle(&mut b);
+        let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+        let (s, e) = {
+            let layout = b.app.session.layout();
+            let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+            let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+            (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+        };
+        b.fast_tap(at);
+        for _ in 0..4 {
+            b.pass(vec![]);
+        }
+        b.fast_tap(at);
+        assert_eq!(b.app.session.sel.ordered(), (s, e), "the word");
+        assert!(b.app.canvas.touch_sel, "the handles arm even though the touch is gone");
     }
 }
