@@ -2628,8 +2628,12 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
     // only at the time between the last two clicks, so a tap somewhere else just before a
     // double-tap reads as a triple and would select a paragraph (egui's release count only
     // agrees with the press's when the presses really were a multi-click run).
+    // The count is the app's own (position-aware) one, not egui's: egui's triple check looks
+    // only at the time between the last two clicks, so a tap somewhere else just before a
+    // double-tap reads as a triple and would select a paragraph. Single-click releases (the
+    // format painter's paste, the drag cleanup) stay with the release path below.
     let released_clicks = if ui.input(|i| i.pointer.any_click()) { app.canvas.last_press.map_or(0, |(_, _, n)| n) } else { 0 };
-    if released_clicks > 0 && app.canvas.unit_drag.as_ref().is_some_and(|d| d.clicks == released_clicks) {
+    if released_clicks > 1 && app.canvas.unit_drag.as_ref().is_some_and(|d| d.clicks == released_clicks) {
         app.canvas.unit_drag = None;
         app.canvas.dragging = false;
         return;
@@ -2947,9 +2951,17 @@ fn selection_handles(app: &mut WordApp, ui: &mut Ui, painter: &egui::Painter, re
             && let Some((page, x, y)) = page_at(rects, layout, scale, pp - vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS))
             && let Some(to) = layout.hit(page, x, y, story)
         {
-            let moved = if start { to != a } else { to != b };
-            if moved {
-                let (anchor, focus) = if start { (to, b.clone()) } else { (a.clone(), to) };
+            // The fixed end is the selection's own other side (the focus for the start
+            // handle, the anchor for the end one), not the visual order: dragging a handle
+            // across the other end reverses the selection and keeps that end, as Word does —
+            // re-reading the ordered pair would collapse the selection on the crossing pass.
+            let (drag_pos, fixed) = if start {
+                (app.session.sel.anchor.clone(), app.session.sel.focus.clone())
+            } else {
+                (app.session.sel.focus.clone(), app.session.sel.anchor.clone())
+            };
+            if to != drag_pos {
+                let (anchor, focus) = if start { (to, fixed) } else { (fixed, to) };
                 let params = json!({
                     "anchor": serde_json::to_value(&anchor).unwrap_or_default(),
                     "focus": serde_json::to_value(&focus).unwrap_or_default(),
@@ -9107,6 +9119,95 @@ mod tests {
         assert_eq!(s3, Pos { off: s.off + 2, ..s.clone() }, "the start follows the handle");
         assert_eq!(e3, e2, "the end stays");
         assert_eq!(b.app.canvas.scroll_offset, scroll, "still no panning");
+    }
+
+    /// Dragging a handle across the other end reverses the selection and keeps the original
+    /// other end (Word and every Android text widget swap the handle roles on a crossing).
+    #[test]
+    fn dragging_a_handle_past_the_other_end_reverses_the_selection() {
+        let mut b = TouchBench::new("Alpha beta gamma delta");
+        b.app.run("caret.docStart", json!({})).unwrap();
+        settle(&mut b);
+        let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+        let (s, e) = {
+            let layout = b.app.session.layout();
+            let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+            let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+            (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+        };
+        b.tap(at);
+        for _ in 0..8 {
+            b.pass(vec![]);
+        }
+        b.tap(at);
+        assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+        settle(&mut b);
+        // The end handle dragged four characters past the start: the selection reverses (the
+        // dragged end takes over) and the original start stays as the other end — the pass
+        // after the crossing must not collapse the selection to the finger.
+        let to = b.tip(&Pos { off: s.off - 4, ..s.clone() });
+        let from = b.tip(&e) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+        b.touch_drag(from, to);
+        let (r1, r2) = b.app.session.sel.ordered();
+        assert_eq!(r1, Pos { off: s.off - 4, ..s.clone() }, "the drag end took over");
+        assert_eq!(r2, s, "the original start stays as the other end");
+    }
+
+    /// The start handle dragged past the other end: the selection reverses and the original
+    /// end stays — the pass after the crossing must not collapse the selection to the finger.
+    #[test]
+    fn dragging_the_start_handle_past_the_end_keeps_the_end() {
+        let mut b = TouchBench::new("Alpha beta gamma delta");
+        b.app.run("caret.docStart", json!({})).unwrap();
+        settle(&mut b);
+        let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+        let (s, e) = {
+            let layout = b.app.session.layout();
+            let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+            let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+            (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+        };
+        b.tap(at);
+        for _ in 0..8 {
+            b.pass(vec![]);
+        }
+        b.tap(at);
+        assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+        settle(&mut b);
+        let to = b.tip(&Pos { off: e.off + 4, ..e.clone() });
+        let from = b.tip(&s) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+        b.touch_drag(from, to);
+        let (r1, r2) = b.app.session.sel.ordered();
+        assert_eq!(r1, e, "the original end stays as the other end");
+        assert_eq!(r2, Pos { off: e.off + 4, ..e.clone() }, "the drag end took over");
+    }
+
+    /// A tap somewhere else just before a double-tap must not turn it into a paragraph: the
+    /// click that ends the run takes its count from the app's own position-aware counter.
+    #[test]
+    fn a_tap_somewhere_else_does_not_turn_a_double_tap_into_a_paragraph() {
+        let mut b = TouchBench::new("Alpha beta gamma delta");
+        b.app.run("caret.docStart", json!({})).unwrap();
+        settle(&mut b);
+        // A tap on paragraph 0's word, then a double-tap one line down, quickly.
+        let a = page_to_screen(&mut b.app, 0, 150.0, 72.0).expect("page on screen");
+        let at = page_to_screen(&mut b.app, 0, 150.0, 104.0).expect("page on screen");
+        let (s, e) = {
+            let layout = b.app.session.layout();
+            let pos = layout.hit(0, 150.0, 104.0, StoryRef::Body).expect("hit");
+            let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+            (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+        };
+        b.tap(a);
+        for _ in 0..4 {
+            b.pass(vec![]);
+        }
+        b.tap(at);
+        for _ in 0..2 {
+            b.pass(vec![]);
+        }
+        b.tap(at);
+        assert_eq!(b.app.session.sel.ordered(), (s, e), "the word, not the paragraph");
     }
 
     /// A still hold (Word on touch) selects the word under the finger — with its handles —

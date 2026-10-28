@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use android_activity::input::{Axis, Button, InputEvent, KeyAction, Keycode, MotionAction, MotionEvent, Source};
+use android_activity::input::{
+    Axis, Button, InputEvent, KeyAction, Keycode, MotionAction, MotionEvent, Source,
+};
 use android_activity::{
     AndroidApp, AndroidAppWaker, ConfigurationRef, InputStatus, MainEvent, Rect,
 };
@@ -229,6 +231,10 @@ impl<T: 'static> EventLoop<T> {
                     warn!("TODO: find a way to notify application of content rect change");
                 },
                 MainEvent::GainedFocus => {
+                    // A new focus epoch: the primary button's latch must not survive a pause
+                    // (a press held across it, or a stream that ended without Cancel/Up,
+                    // would drop the next click's press).
+                    self.primary_button.reset();
                     HAS_FOCUS.store(true, Ordering::Relaxed);
                     callback(
                         event::Event::WindowEvent {
@@ -526,8 +532,7 @@ impl<T: 'static> EventLoop<T> {
         // The pointer's position and scroll axes, for the events that carry them. A mouse is
         // a single pointer, and both android-activity backends expose the axes on it.
         let pointer = motion_event.pointers().next();
-        let position =
-            pointer.as_ref().map(|p| PhysicalPosition { x: p.x() as _, y: p.y() as _ });
+        let position = pointer.as_ref().map(|p| PhysicalPosition { x: p.x() as _, y: p.y() as _ });
 
         match motion_event.action() {
             MotionAction::Scroll => {
@@ -580,7 +585,8 @@ impl<T: 'static> EventLoop<T> {
                 // rapid second click still reports. A release for a gesture whose press was
                 // not a primary one (a right click's bare Up) is dropped with the duplicates:
                 // the button events carry the real release.
-                let primary = motion_event.button_state().primary() || motion_event.action_button() == Button::Primary;
+                let primary = motion_event.button_state().primary()
+                    || motion_event.action_button() == Button::Primary;
                 if motion_event.action() == MotionAction::Down && !primary {
                     return InputStatus::Handled;
                 }
@@ -589,8 +595,13 @@ impl<T: 'static> EventLoop<T> {
                 }
                 let pressed = motion_event.action() == MotionAction::Down;
                 if self.primary_button.report(pressed) {
-                    let state = if pressed { ElementState::Pressed } else { ElementState::Released };
-                    dispatch(WindowEvent::MouseInput { device_id, state, button: MouseButton::Left });
+                    let state =
+                        if pressed { ElementState::Pressed } else { ElementState::Released };
+                    dispatch(WindowEvent::MouseInput {
+                        device_id,
+                        state,
+                        button: MouseButton::Left,
+                    });
                 }
             },
             MotionAction::Cancel => {
@@ -611,8 +622,8 @@ impl<T: 'static> EventLoop<T> {
                 }
             },
             MotionAction::HoverExit => dispatch(WindowEvent::CursorLeft { device_id }),
-            // Nothing else a mouse reports needs translating here (Cancel is meaningless for
-            // the buttons, and pointer-id actions belong to touch).
+            // Nothing else a mouse reports needs translating here (Cancel is reset above,
+            // and pointer-id actions belong to touch).
             _ => return InputStatus::Unhandled,
         }
         InputStatus::Handled
