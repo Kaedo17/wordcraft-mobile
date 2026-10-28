@@ -1930,7 +1930,15 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         } else if let Some(pos) = layout.hit(page, x, y, app.session.sel.focus.story) {
             let (a, b) = app.session.sel.ordered();
             if !(a <= pos && pos <= b) || app.session.sel.is_collapsed() {
-                app.session.sel = wordcraft_engine::Selection::caret(pos);
+                // A long-press on touch selects the word under the finger — with its handles —
+                // as Word on touch does; a mouse right-click only moves the caret there.
+                if ui.input(|i| i.any_touches()) {
+                    app.session.sel = wordcraft_engine::Selection::caret(pos.clone());
+                    let _ = app.session.run("select.word", &json!({}));
+                    app.canvas.touch_sel = true;
+                } else {
+                    app.session.sel = wordcraft_engine::Selection::caret(pos);
+                }
             }
             context_suggestions(app);
         }
@@ -9099,5 +9107,41 @@ mod tests {
         assert_eq!(s3, Pos { off: s.off + 2, ..s.clone() }, "the start follows the handle");
         assert_eq!(e3, e2, "the end stays");
         assert_eq!(b.app.canvas.scroll_offset, scroll, "still no panning");
+    }
+
+    /// A still hold (Word on touch) selects the word under the finger — with its handles —
+    /// and opens the context menu over it.
+    #[test]
+    fn a_long_press_selects_the_word_and_opens_the_menu() {
+        let mut b = TouchBench::new("Alpha beta gamma delta");
+        b.app.run("caret.docStart", json!({})).unwrap();
+        settle(&mut b);
+        let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+        let (s, e) = {
+            let layout = b.app.session.layout();
+            let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+            let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+            (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+        };
+        // Press and hold past egui's long-press (0.8 s), then lift.
+        b.pass(vec![
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: at, force: Some(0.5) },
+            Event::PointerMoved(at),
+            Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+        ]);
+        for _ in 0..60 {
+            b.pass(vec![]);
+        }
+        b.pass(vec![
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: at, force: Some(0.0) },
+            Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+            Event::PointerGone,
+        ]);
+        for _ in 0..3 {
+            b.pass(vec![]);
+        }
+        assert_eq!(b.app.session.sel.ordered(), (s, e), "the word under the hold");
+        assert!(b.app.canvas.touch_sel, "the hold's selection shows its handles");
+        assert!(b.app.canvas.context_menu_open, "the menu is open over it");
     }
 }
