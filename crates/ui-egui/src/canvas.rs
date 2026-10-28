@@ -2938,7 +2938,7 @@ fn selection_handles(app: &mut WordApp, ui: &mut Ui, painter: &egui::Painter, re
         painter.circle_stroke(center, HANDLE_RADIUS, Stroke::new(1.0, t.canvas));
         // The drop plus a fingertip's margin around it and the spike.
         let hit = Rect::from_min_size(pos2(center.x - 14.0, tip.y - 6.0), vec2(28.0, HANDLE_SPIKE + 2.0 * HANDLE_RADIUS + 20.0));
-        let id = ui.id().with(("selection_handle", if start { "start" } else { "end" }));
+        let id = ui.scope_id().with(("selection_handle", if start { "start" } else { "end" }));
         let r = ui.interact(hit, id, Sense::drag());
         if r.dragged()
             && let Some(pp) = r.interact_pointer_pos()
