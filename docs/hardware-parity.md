@@ -1,6 +1,6 @@
 # Hardware parity with Microsoft Word
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-29 · **Change:** minor (Android (Tab S11, plus a device pass on a second device, AGS5-W09): the touch surface — page pan, long-press menu, tap, double-tap and the selection's handles — and stamped keyboard chords; previously trivial: Pen / stylus row: two-stroke and closed-head arrows; previously trivial: Pen / stylus row: ink, eraser and Ink to Shape incl. arrows landed; previously trivial: a window too big for its screen shrinks to fit when it opens, #1215; previously trivial: 32-bit Windows starts on OpenGL; previously major: first version) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4 and Word for Windows
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-29 · **Change:** minor (Android (Tab S11, signed release build): the mouse verified on device for the first time — click, double-click, triple-click, drag-select, right button, wheel, hover — and the touch selection surface re-verified; previously minor: Android (Tab S11, plus a device pass on a second device, AGS5-W09): the touch surface — page pan, long-press menu, tap, double-tap and the selection's handles — and stamped keyboard chords; previously trivial: Pen / stylus row: two-stroke and closed-head arrows; previously trivial: Pen / stylus row: ink, eraser and Ink to Shape incl. arrows landed; previously trivial: a window too big for its screen shrinks to fit when it opens, #1215; previously trivial: 32-bit Windows starts on OpenGL; previously major: first version) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4 and Word for Windows
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -29,8 +29,11 @@ dragging its two teardrop handles, character by character, the way Word on touch
 drag-growth paths still stand down for touch, so a finger never drag-selects. Keyboard modifiers are
 stamped onto each frame's key events, so chords reach egui (the on-device pass exercised typing;
 no Bluetooth keyboard was attached), and the vendored winit fills Android's mouse path, so a mouse
-attached to the tablet keeps hover, wheel and right button (exercised by host tests; no mouse was
-attached on device); its primary button is deduped, because devices report a click through both
+attached to the tablet keeps hover, wheel and right button, verified on device with the signed
+release build: a single click places the caret only (on a word, or invisibly on a punctuation
+character), a double-click selects a word, a triple-click a paragraph, a press-drag selects, the
+right button opens the context menu, and the wheel and hover work; its primary button is deduped,
+because devices report a click through both
 Android's Down/Up and ButtonPress/Release pairs, and one physical click must be one click — and the
 button that changed comes from a diff of the button state, not `AMotionEvent_getActionButton` (an
 API 33 symbol some devices' `libandroid` omits, which failed the whole library to load on an API 31
@@ -43,6 +46,7 @@ General offers a 50% interface size for the tablet's 2560×1600 landscape screen
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Android (Tab S11, signed release build, device pass): the mouse verified on device for the first time — a single click places the caret only, a double-click selects a word, a triple-click a paragraph, press-drag selects, the right button opens the menu, and the wheel and hover work — and the touch selection surface re-verified on the signed build |
 | 2026-10-29 | minor | Android (Huawei MediaPad, AGS5-W09, API 31, device pass): the whole touch selection surface verified on device — double-tap, long-press, both handle drags, a crossing drag past the other end, tap-away collapse, menu Cut, pan — plus two fixes it found: the library failed to load on API 31 (`AMotionEvent_getActionButton`), and a fast tap's down/up sharing a pass disarmed the handles |
 | 2026-10-28 | minor | Android: touch selection handles (a touch-made selection grows by dragging its ends), a long-press selects the word under the hold as well as opening the menu, and the mouse's primary button is deduped (one physical click is one click) |
 | 2026-10-26 | minor | Android (Tab S11): the touch surface — page pan, long-press menu, tap and double-tap — and stamped keyboard modifiers verified on device; no Bluetooth keyboard or mouse was attached |
