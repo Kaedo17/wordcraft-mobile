@@ -7,7 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use android_activity::input::{
-    Axis, Button, InputEvent, KeyAction, Keycode, MotionAction, MotionEvent, Source,
+    Axis, InputEvent, KeyAction, Keycode, MotionAction, MotionEvent, Source,
 };
 use android_activity::{
     AndroidApp, AndroidAppWaker, ConfigurationRef, InputStatus, MainEvent, Rect,
@@ -150,6 +150,11 @@ pub struct EventLoop<T: 'static> {
     /// The primary button's reported state, collapsing Android's double report of one
     /// click (see [`primary_button::Reported`]).
     primary_button: primary_button::Reported,
+    /// Which buttons were down at the last button event: the button a `ButtonPress` or
+    /// `ButtonRelease` carries is the one bit the state gained or lost (a device's
+    /// libandroid may lack `AMotionEvent_getActionButton` — an API 33 addition that some
+    /// builds omit — and even a reference to it would fail the library to load).
+    buttons_down: std::cell::Cell<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -200,6 +205,7 @@ impl<T: 'static> EventLoop<T> {
             ignore_volume_keys: attributes.ignore_volume_keys,
             combining_accent: None,
             primary_button: primary_button::Reported::default(),
+            buttons_down: std::cell::Cell::new(0),
         })
     }
 
@@ -546,31 +552,41 @@ impl<T: 'static> EventLoop<T> {
                 dispatch(WindowEvent::MouseWheel { device_id, delta, phase: TouchPhase::Moved });
             },
             MotionAction::ButtonPress | MotionAction::ButtonRelease => {
-                // Only a press or a release carries the button that changed; the primary
+                // Only a press or a release carries the button that changed: the one bit the
+                // button state gained or lost since the previous button event. The primary
                 // button normally arrives as Down/Up instead, but report it if a device
                 // sends it here too — deduped, because the Down/Up pair below reports the
                 // same transitions (see `primary_button`).
-                let button = match motion_event.action_button() {
-                    Button::Primary => MouseButton::Left,
-                    Button::Secondary => MouseButton::Right,
-                    Button::Tertiary => MouseButton::Middle,
-                    Button::Back => MouseButton::Back,
-                    Button::Forward => MouseButton::Forward,
-                    _ => return InputStatus::Unhandled,
-                };
-                let state = match motion_event.action() {
-                    MotionAction::ButtonPress => ElementState::Pressed,
-                    _ => ElementState::Released,
-                };
+                let pressed = motion_event.action() == MotionAction::ButtonPress;
+                let state = if pressed { ElementState::Pressed } else { ElementState::Released };
                 if let Some(position) = position {
                     dispatch(WindowEvent::CursorMoved { device_id, position });
                 }
-                if motion_event.action_button() == Button::Primary {
-                    if self.primary_button.report(state == ElementState::Pressed) {
-                        dispatch(WindowEvent::MouseInput { device_id, state, button });
-                    }
-                } else {
-                    dispatch(WindowEvent::MouseInput { device_id, state, button });
+                let down = motion_event.button_state().0;
+                let changed = down ^ self.buttons_down.replace(down);
+                // Android's button bits (MotionEvent's extensible enum values, ABI-stable).
+                let button = match changed {
+                    1 => Some(MouseButton::Left),
+                    2 => Some(MouseButton::Right),
+                    4 => Some(MouseButton::Middle),
+                    8 => Some(MouseButton::Back),
+                    16 => Some(MouseButton::Forward),
+                    _ => None,
+                };
+                match button {
+                    Some(MouseButton::Left) => {
+                        if self.primary_button.report(pressed) {
+                            dispatch(WindowEvent::MouseInput {
+                                device_id,
+                                state,
+                                button: MouseButton::Left,
+                            });
+                        }
+                    },
+                    Some(button) => dispatch(WindowEvent::MouseInput { device_id, state, button }),
+                    // A repeat without a state change (or a chord batching two buttons into
+                    // one event, which Android does not do) reports nothing.
+                    None => {},
                 }
             },
             MotionAction::Down | MotionAction::Up => {
@@ -585,8 +601,7 @@ impl<T: 'static> EventLoop<T> {
                 // rapid second click still reports. A release for a gesture whose press was
                 // not a primary one (a right click's bare Up) is dropped with the duplicates:
                 // the button events carry the real release.
-                let primary = motion_event.button_state().primary()
-                    || motion_event.action_button() == Button::Primary;
+                let primary = motion_event.button_state().primary();
                 if motion_event.action() == MotionAction::Down && !primary {
                     return InputStatus::Handled;
                 }
