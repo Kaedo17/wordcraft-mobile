@@ -2930,7 +2930,10 @@ fn touch_pass(ui: &egui::Ui) -> bool {
 
 /// selections show no handles (`touch_sel`), so the desktop draws nothing new.
 fn selection_handles(app: &mut WordApp, ui: &mut Ui, painter: &egui::Painter, rects: &[Rect], layout: &DocLayout, scale: f32, t: &Tokens) {
-    if !app.canvas.touch_sel || app.session.sel.is_collapsed() || app.session.view.read_mode || crate::objects::selected(app).is_some() {
+    // An armed touch selection shows its handles even when its ends have met (a handle
+    // dragged onto the other end): both teardrops stack at the caret, the drag stays alive,
+    // and pulling past regrows the selection the other way — Word keeps its handles there.
+    if !app.canvas.touch_sel || app.session.view.read_mode || crate::objects::selected(app).is_some() {
         return;
     }
     let (a, b) = app.session.sel.ordered();
@@ -9034,6 +9037,28 @@ mod tests {
             ]);
         }
 
+        /// A drag through exact waypoints without lifting the finger: press at `from`, one
+        /// pass per waypoint, release at `to`. A device finger's fine-grained moves land on
+        /// the other end of the selection; interpolated ones skip over it.
+        fn touch_drag_through(&mut self, from: Pos2, mids: Vec<Pos2>, to: Pos2) {
+            self.pass(vec![
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: from, force: Some(0.5) },
+                Event::PointerMoved(from),
+                Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            ]);
+            for p in mids.into_iter().chain(std::iter::once(to)) {
+                self.pass(vec![
+                    Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Move, pos: p, force: Some(0.5) },
+                    Event::PointerMoved(p),
+                ]);
+            }
+            self.pass(vec![
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: to, force: Some(0.0) },
+                Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+                Event::PointerGone,
+            ]);
+        }
+
         /// A mouse click (no touch events): the press and its release a frame apart.
         fn mouse_click(&mut self, at: Pos2) {
             self.pass(vec![
@@ -9203,6 +9228,78 @@ mod tests {
         let (r1, r2) = b.app.session.sel.ordered();
         assert_eq!(r1, e, "the original end stays as the other end");
         assert_eq!(r2, Pos { off: e.off + 4, ..e.clone() }, "the drag end took over");
+    }
+
+    /// A handle dragged exactly onto the other end collapses the selection but must keep the
+    /// drag alive (Word keeps its handles stacked at the caret): pulling on past regrows the
+    /// selection the other way, in the same gesture, without a dead zone.
+    #[test]
+    fn a_handle_drag_through_the_other_end_keeps_the_drag_alive() {
+        let mut b = TouchBench::new("Alpha beta gamma delta");
+        b.app.run("caret.docStart", json!({})).unwrap();
+        settle(&mut b);
+        let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+        let (s, e) = {
+            let layout = b.app.session.layout();
+            let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+            let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+            (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+        };
+        b.tap(at);
+        for _ in 0..8 {
+            b.pass(vec![]);
+        }
+        b.tap(at);
+        assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+        settle(&mut b);
+        // One gesture: onto the start handle's exact tip (the ends meet, the selection
+        // collapses), then on past it into "Alpha".
+        let from = b.tip(&e) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+        let onto = b.tip(&s) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+        let drop_off = b.tip(&Pos { off: s.off - 2, ..s.clone() });
+        b.touch_drag_through(from, vec![onto], drop_off);
+        let (r1, r2) = b.app.session.sel.ordered();
+        assert_eq!(r1, Pos { off: s.off - 2, ..s.clone() }, "the drag end took over past the meet");
+        assert_eq!(r2, s, "the original start stays as the other end");
+        assert!(b.app.canvas.touch_sel, "the handles stayed armed through the meet");
+    }
+
+    /// Dropping a handle exactly on the other end leaves the selection collapsed with its
+    /// handles still armed at the caret (they stack there, as Word's do), not lost.
+    #[test]
+    fn dropping_a_handle_on_the_other_end_keeps_the_handles_armed() {
+        let mut b = TouchBench::new("Alpha beta gamma delta");
+        b.app.run("caret.docStart", json!({})).unwrap();
+        settle(&mut b);
+        let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+        let (s, e) = {
+            let layout = b.app.session.layout();
+            let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+            let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+            (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+        };
+        b.tap(at);
+        for _ in 0..8 {
+            b.pass(vec![]);
+        }
+        b.tap(at);
+        assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+        settle(&mut b);
+        let from = b.tip(&e) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+        let onto = b.tip(&s) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+        b.touch_drag(from, onto);
+        assert!(b.app.session.sel.is_collapsed(), "the ends met");
+        assert_eq!(b.app.session.sel.focus, s, "the collapse is at the other end");
+        assert!(b.app.canvas.touch_sel, "the handles stay armed at the caret");
+        // The stacked handles are still there to take hold of: grabbing them and pulling
+        // away regrows the selection, instead of the dead tap a lost pair would leave.
+        settle(&mut b);
+        let away = b.tip(&Pos { off: e.off + 3, ..e.clone() });
+        b.touch_drag(onto, away);
+        let (r1, r2) = b.app.session.sel.ordered();
+        assert_eq!(r1, s, "the start stays");
+        assert_eq!(r2, Pos { off: e.off + 3, ..e.clone() }, "the end regrew from the stack");
+        assert!(b.app.canvas.touch_sel, "still armed after the regrow");
     }
 
     /// A tap somewhere else just before a double-tap must not turn it into a paragraph: the
