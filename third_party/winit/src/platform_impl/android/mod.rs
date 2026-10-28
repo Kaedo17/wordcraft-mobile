@@ -12,6 +12,8 @@ use android_activity::{
 };
 use tracing::{debug, trace, warn};
 
+mod primary_button;
+
 use crate::cursor::Cursor;
 use crate::dpi::{PhysicalPosition, PhysicalSize, Position, Size};
 use crate::error;
@@ -143,6 +145,9 @@ pub struct EventLoop<T: 'static> {
     cause: StartCause,
     ignore_volume_keys: bool,
     combining_accent: Option<char>,
+    /// The primary button's reported state, collapsing Android's double report of one
+    /// click (see [`primary_button::Reported`]).
+    primary_button: primary_button::Reported,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -192,6 +197,7 @@ impl<T: 'static> EventLoop<T> {
             cause: StartCause::Init,
             ignore_volume_keys: attributes.ignore_volume_keys,
             combining_accent: None,
+            primary_button: primary_button::Reported::default(),
         })
     }
 
@@ -537,7 +543,8 @@ impl<T: 'static> EventLoop<T> {
             MotionAction::ButtonPress | MotionAction::ButtonRelease => {
                 // Only a press or a release carries the button that changed; the primary
                 // button normally arrives as Down/Up instead, but report it if a device
-                // sends it here too.
+                // sends it here too — deduped, because the Down/Up pair below reports the
+                // same transitions (see `primary_button`).
                 let button = match motion_event.action_button() {
                     Button::Primary => MouseButton::Left,
                     Button::Secondary => MouseButton::Right,
@@ -553,15 +560,26 @@ impl<T: 'static> EventLoop<T> {
                 if let Some(position) = position {
                     dispatch(WindowEvent::CursorMoved { device_id, position });
                 }
-                dispatch(WindowEvent::MouseInput { device_id, state, button });
+                if motion_event.action_button() == Button::Primary {
+                    if self.primary_button.report(state == ElementState::Pressed) {
+                        dispatch(WindowEvent::MouseInput { device_id, state, button });
+                    }
+                } else {
+                    dispatch(WindowEvent::MouseInput { device_id, state, button });
+                }
             },
             MotionAction::Down | MotionAction::Up => {
                 // Android reports a mouse's primary button as an ordinary down/up, and a
                 // non-primary one (right, middle…) as a bare down/up *before* its
                 // ButtonPress/Release. Only a primary down/up is a left click: otherwise a right
                 // click would also select or scrub as a left one. Check `Down` only, since on
-                // `Up` the button state may already be cleared (and a release the app never saw
-                // pressed is harmless).
+                // `Up` the button state may already be cleared.
+                //
+                // Both pairs carry the primary button, so each transition is reported once
+                // (`primary_button`): one physical click is one press and one release, and a
+                // rapid second click still reports. A release for a gesture whose press was
+                // not a primary one (a right click's bare Up) is dropped with the duplicates:
+                // the button events carry the real release.
                 let primary = motion_event.button_state().primary() || motion_event.action_button() == Button::Primary;
                 if motion_event.action() == MotionAction::Down && !primary {
                     return InputStatus::Handled;
@@ -569,11 +587,17 @@ impl<T: 'static> EventLoop<T> {
                 if let Some(position) = position {
                     dispatch(WindowEvent::CursorMoved { device_id, position });
                 }
-                let state = match motion_event.action() {
-                    MotionAction::Down => ElementState::Pressed,
-                    _ => ElementState::Released,
-                };
-                dispatch(WindowEvent::MouseInput { device_id, state, button: MouseButton::Left });
+                let pressed = motion_event.action() == MotionAction::Down;
+                if self.primary_button.report(pressed) {
+                    let state = if pressed { ElementState::Pressed } else { ElementState::Released };
+                    dispatch(WindowEvent::MouseInput { device_id, state, button: MouseButton::Left });
+                }
+            },
+            MotionAction::Cancel => {
+                // The gesture is over without its final transition: forget the primary
+                // button's state, so the next click's press reports (a stuck state would
+                // silently drop it). Nothing is dispatched for the cancel itself.
+                self.primary_button.reset();
             },
             MotionAction::Move | MotionAction::HoverMove => {
                 if let Some(position) = position {
