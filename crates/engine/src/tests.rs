@@ -10610,11 +10610,7 @@ fn pocket_width_clamps_and_never_stores_a_non_finite_width() {
     // The width is what Pocket Mode lays out at, and a change re-lays it out (Web Layout is one
     // long page, so the wrapped line count is what shows the reflow).
     let lines = |s: &mut Session| -> usize {
-        s.layout().pages[0]
-            .items
-            .iter()
-            .map(|i| if let wordcraft_layout::Placed::Lines { l0, l1, .. } = i { l1 - l0 } else { 0 })
-            .sum()
+        s.layout().pages[0].items.iter().map(|i| if let wordcraft_layout::Placed::Lines { l0, l1, .. } = i { l1 - l0 } else { 0 }).sum()
     };
     run(&mut s, "view.pocketMode", json!({"value": true}));
     run(&mut s, "view.pocketWidth", json!({"value": 240}));
