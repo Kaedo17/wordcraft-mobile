@@ -345,6 +345,18 @@ fn services(file_dialog: FileDialog, ctx: &egui::Context, access: Option<&Shared
         // (the second root) hangs off the grant hooks from `access`.
         #[cfg(target_os = "android")]
         app_files_dir: android_storage_base(),
+        // Pocket Mode's hand-off to the other front end (Android only; `None` elsewhere, where the
+        // mode is the pocket presentation alone).
+        pocket_handoff: access.and_then(|a| a.switch_front_end.clone()).map(|f| {
+            let f = f.clone();
+            Box::new(move |pocket: bool| {
+                if f(pocket) {
+                    Ok(())
+                } else {
+                    Err("Pocket Mode could not switch to the phone app on this device.".to_string())
+                }
+            }) as Box<dyn Fn(bool) -> Result<(), String>>
+        }),
         #[cfg(not(target_os = "android"))]
         printers: Some(print::discover()),
         #[cfg(not(target_os = "android"))]
@@ -532,6 +544,11 @@ pub struct SharedStorageAccess {
     pub granted: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
     /// Ask for it: the system settings page on Android 11+, the permission dialog before that.
     pub ask: std::sync::Arc<dyn Fn() + Send + Sync>,
+    /// Hand the session to the other front end for `pocket` (the Compose app when `true`, this
+    /// egui one when `false`), answering whether its activity started. `None` in a build with only
+    /// one front end. Android cannot swap one activity's UI for another's in place, so the switch
+    /// is a hand-off and the app reports it when the start fails.
+    pub switch_front_end: Option<std::sync::Arc<dyn Fn(bool) -> bool + Send + Sync>>,
 }
 
 /// Android's entry: like [`run`], but with the activity's handle, which eframe's event loop

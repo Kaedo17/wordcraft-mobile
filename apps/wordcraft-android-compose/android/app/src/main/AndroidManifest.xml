@@ -14,6 +14,23 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.WordCraft">
 
+        <!-- The desktop-style front end (the egui app), packaged in this APK beside the Compose
+             one: `crates/android-bridge` is its engine half's sibling and its window comes from
+             winit inside `libwordcraft_android.so`. Android cannot swap one activity's UI for
+             another's in place, so Pocket Mode hands off between the two activities rather than
+             re-laying out in one; each declares `configChanges` so a rotation does not recreate it,
+             and `launchMode="singleTask"` keeps exactly one of each (the hand-off's
+             FLAG_ACTIVITY_CLEAR_TOP lands on it rather than stacking another). -->
+        <activity
+            android:name="android.app.NativeActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <!-- winit's event loop needs to know which library to load and where to enter it. -->
+            <meta-data android:name="android.app.lib_name" android:value="wordcraft_android" />
+        </activity>
+
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"

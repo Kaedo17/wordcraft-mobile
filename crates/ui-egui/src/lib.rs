@@ -137,6 +137,15 @@ pub struct Services {
     /// ordinary permission dialog before that. Best effort — a build or device that cannot ask
     /// says so in the browser and stays where it is. `None` elsewhere.
     pub shared_storage_grant: Option<Box<dyn Fn()>>,
+    /// Hand the session over to the *other* front end for `pocket` (Android: the Compose app),
+    /// returning `Ok(())` once it is on its way, or `Err(reason)` when this build has no second
+    /// front end to hand to. Set only by the Android entry crate, which starts the other activity
+    /// (`wordcraft::PocketHandoff`); the desktop and the web leave it `None`.
+    ///
+    /// Called after the document has been made safe: the app saves it (or writes the recovery
+    /// copy when it has never been saved) first, and the handoff is cancelled when that write
+    /// fails, so a half-finished switch can never lose the user's edits.
+    pub pocket_handoff: Option<Box<dyn Fn(bool) -> Result<(), String>>>,
     /// Web: open a file picker; the file arrives later through `inbox`.
     pub open_async: Option<Box<dyn Fn(&str)>>,
     /// Web: files (name, bytes) delivered asynchronously (picker, drag and drop).
@@ -1115,6 +1124,21 @@ impl WordApp {
         // part of it: saving and exporting go on without it (the refusal stays on the status
         // line), and replacing the document asks Save / Don't Save / Cancel about it.
         let refused = if flushes_comment_drafts(id, &params) { panes::flush_comment_drafts(self).err() } else { None };
+        // Pocket Mode on Android hands the session to the other front end (the Compose app): the
+        // two UIs each own the window, so this is an activity hand-off rather than a live swap.
+        // Done before the engine command so a failed save cancels the switch and leaves the flag
+        // alone — a half-switched view state with the document at risk is the one outcome this
+        // must not have.
+        if id == "view.pocketMode" {
+            let wanted = params.get("value").and_then(serde_json::Value::as_bool).unwrap_or(!self.session.view.mobile);
+            // The hand-off runs once the document is safe. `save_for_handoff` reports what to do:
+            // `Ok(true)` the switch may go ahead, `Ok(false)` there is no second front end in this
+            // build (the pocket presentation still applies), `Err` it must not happen at all.
+            match self.pocket_handoff(wanted) {
+                Ok(_) => {}
+                Err(why) => return Err(why),
+            }
+        }
         if id == "file.recover" && params.as_object().is_none_or(|p| p.is_empty()) {
             self.ui.backstage = true;
             self.ui.backstage_page = "recover".into();
@@ -2797,6 +2821,38 @@ impl WordApp {
 
     /// AutoSave: write a saved document a couple of seconds after the last change. A failure is
     /// shown in the status bar and turns AutoSave off for the file until the user saves it again.
+    /// Make the document safe, then hand the session to the other front end for `pocket`.
+    ///
+    /// The two phone UIs (this egui one and the Compose app) each own the window, so switching is
+    /// an activity hand-off rather than a live swap. Before it happens the document must survive on
+    /// disk: it is saved when it has a path, and the crash-safe recovery copy is written when it has
+    /// never been saved. If neither works the hand-off is **cancelled** with the reason, because an
+    /// edit lost to a half-finished switch is worse than a switch that did not happen.
+    ///
+    /// `Ok(())` when the other front end is on its way; `Ok("")` when this build has none (the
+    /// desktop and the web): the caller still applies the pocket presentation, so the mode is
+    /// meaningful everywhere and testable headlessly.
+    fn pocket_handoff(&mut self, pocket: bool) -> Result<(), String> {
+        let Some(handoff) = self.services.pocket_handoff.as_ref() else {
+            // No second front end here: Pocket Mode is the pocket presentation alone.
+            return Ok(());
+        };
+        if !pocket {
+            // Coming back to this front end: hand over the way out too, so the other side can
+            // close once this one is up.
+            return handoff(false).map_err(|e| e.to_string());
+        }
+        if self.session.dirty {
+            // Saved when it has a path; otherwise the recovery copy, which the other side opens.
+            let has_path = self.session.path.is_some();
+            let id = if has_path { "file.save" } else { "file.recover" };
+            if let Err(e) = self.session.run(id, &json!({})) {
+                return Err(i18n::fmt(tl!("Pocket Mode could not start: {error}"), &[("error", &e.to_string())]));
+            }
+        }
+        handoff(true)
+    }
+
     fn autosave_tick(&mut self, now: f64) {
         if self.autosaves() && self.session.dirty && now - self.last_autosave > 2500.0 && now - self.canvas.caret_visible_since > 1500.0 {
             self.last_autosave = now;

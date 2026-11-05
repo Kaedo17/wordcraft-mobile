@@ -70,6 +70,10 @@ abstract class CargoNdkBuild : DefaultTask() {
     @get:Input abstract val ndkDir: Property<String>
     @get:Input abstract val abis: ListProperty<String>
     @get:Input abstract val apiLevel: Property<Int>
+    /** The cargo package to build (the bridge, or the egui app's Android entry crate). */
+    @get:Input abstract val packageName: Property<String>
+    /** The cdylib it produces, the only library kept in the output directory. */
+    @get:Input abstract val libName: Property<String>
     @get:OutputDirectory abstract val outputDir: DirectoryProperty
 
     @TaskAction
@@ -90,14 +94,16 @@ abstract class CargoNdkBuild : DefaultTask() {
             environment("CARGO_ENCODED_RUSTFLAGS", remap.joinToString("\u001f"))
             commandLine(
                 listOf(cargo.get(), "ndk") + targets +
-                    // The Rust half is the bridge crate in this workspace (`crates/android-bridge`),
-                    // whose cdylib the Kotlin bindings are generated from.
-                    listOf("--platform", apiLevel.get().toString(), "-o", out, "build", "--release", "-p", "wordcraft-android-bridge", "--lib"),
+                    // The Rust half is the crate named by `packageName`: the bridge (whose cdylib
+                    // the Kotlin bindings are generated from), or the egui front end's Android
+                    // entry crate that the NativeActivity loads.
+                    listOf("--platform", apiLevel.get().toString(), "-o", out, "build", "--release", "-p", packageName.get(), "--lib"),
             )
         }
         // cargo-ndk copies every shared library cargo left behind (dylib builds of a few
         // dependencies); the app's library links them statically, so only it ships
-        File(out).walk().filter { it.isFile && it.name != "libwordcraft_android_bridge.so" }.forEach { it.delete() }
+        val keep = libName.get()
+        File(out).walk().filter { it.isFile && it.name != keep }.forEach { it.delete() }
     }
 }
 
@@ -342,7 +348,23 @@ androidComponents {
             ndkDir.set(androidComponents.sdkComponents.ndkDirectory.map { it.asFile.absolutePath })
             abis.set(rustAbis)
             apiLevel.set(minApi)
+            packageName.set("wordcraft-android-bridge")
+            libName.set("libwordcraft_android_bridge.so")
             // cargo knows what changed
+            outputs.upToDateWhen { false }
+        }
+        // The desktop-style front end (egui): its NativeActivity lives in this same APK and loads
+        // `libwordcraft_android.so`, so Pocket Mode can hand off between the two activities.
+        val cargoBuildEgui = tasks.register<CargoNdkBuild>("cargoBuildEgui$name") {
+            group = "rust"
+            description = "Builds libwordcraft_android.so for $rustAbis"
+            cargo.set(cargoExecutable)
+            workspaceDir.set(cargoWorkspaceDir.absolutePath)
+            ndkDir.set(androidComponents.sdkComponents.ndkDirectory.map { it.asFile.absolutePath })
+            abis.set(rustAbis)
+            apiLevel.set(minApi)
+            packageName.set("wordcraft-android")
+            libName.set("libwordcraft_android.so")
             outputs.upToDateWhen { false }
         }
         val bindgen = tasks.register<UniffiBindgen>("uniffiBindgen$name") {
@@ -404,6 +426,9 @@ androidComponents {
         variant.sources.assets?.addGeneratedSourceDirectory(docFonts, DocumentFontsTask::outputDir)
         variant.sources.java?.addGeneratedSourceDirectory(icons, LucideIconsTask::outputDir)
         variant.sources.jniLibs?.addGeneratedSourceDirectory(cargoBuild, CargoNdkBuild::outputDir)
+        // The same for the egui front end's library: both front ends ship in this one APK, and the
+        // NativeActivity declared in the manifest loads this one.
+        variant.sources.jniLibs?.addGeneratedSourceDirectory(cargoBuildEgui, CargoNdkBuild::outputDir)
         variant.sources.java?.addGeneratedSourceDirectory(bindgen, UniffiBindgen::outputDir)
         variant.sources.res?.addGeneratedSourceDirectory(res, WordcraftAssets::outputDir)
         variant.sources.assets?.addGeneratedSourceDirectory(licences, WordcraftAssets::outputDir)

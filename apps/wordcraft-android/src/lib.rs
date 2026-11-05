@@ -35,6 +35,9 @@ pub fn android_main(app: android_activity::AndroidApp) {
     let shared = android_access::capture(&app).map(|a| wordcraft::SharedStorageAccess {
         granted: std::sync::Arc::new(move || a.shared_storage_granted()),
         ask: std::sync::Arc::new(move || a.ask_shared_storage_grant()),
+        // Pocket Mode's hand-off: start the other front end's activity, which re-opens the
+        // document this one has just made safe.
+        switch_front_end: Some(std::sync::Arc::new(move |pocket: bool| a.start_other_front_end(pocket))),
     });
     if let Err(e) = wordcraft::run_android(app, shared) {
         log::error!("wordcraft exited with an error: {e}");

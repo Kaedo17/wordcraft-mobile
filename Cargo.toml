@@ -8,6 +8,8 @@ members = [
     "apps/wordcraft",
     "apps/wordcraft-cli",
     "apps/wordcraft-web",
+    # The Android entry point: NativeActivity's `android_main` trampoline (the egui front end).
+    "apps/wordcraft-android",
     "apps/wordcraft-android-compose/bindgen",
     "xtask",
 ]
