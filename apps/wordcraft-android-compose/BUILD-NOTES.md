@@ -29,6 +29,12 @@ Verified on the development machine (2026-11-05):
 - **The bridge cross-compiles for Android**: `cargo ndk -t arm64-v8a --platform 29 build --release
   -p wordcraft-android-bridge --lib` produced a real
   `ELF 64-bit LSB shared object, ARM aarch64, for Android 29, built by NDK r30`.
+- **Both front ends' libraries cross-compile**, which is what the one-APK hand-off needs: the same
+  command with `-p wordcraft-android` produced `libwordcraft_android.so` (80 MB, the egui front end
+  over eframe/winit/wgpu) with `android_main` exported — the symbol the `NativeActivity` declared in
+  the manifest loads. A full link needs about 5 GB of free RAM; with less, cargo reports it is
+  waiting on the build directory and the link can be killed, so build it when the machine has room
+  (`CARGO_BUILD_JOBS=1` helps).
 - **The bindings generate from that library**: `cargo run -p wordcraft-android-bindgen -- generate
   <the .so> --language kotlin --out-dir out` wrote
   `io/github/artcraftandroid/wordcraft/core/wordcraft_android_bridge.kt` (5,678 lines), in the
