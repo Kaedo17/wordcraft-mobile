@@ -18,6 +18,7 @@ import io.github.artcraftandroid.wordcraft.engine.DocumentFiles
 import io.github.artcraftandroid.wordcraft.ui.AppRoot
 import io.github.artcraftandroid.wordcraft.ui.AppViewModel
 import io.github.artcraftandroid.wordcraft.ui.WordcraftTheme
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -140,6 +141,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+            // Pocket Mode's hand-off from egui: its native thread cannot start an activity — Android
+            // can drop a background-thread launch without a word — so it posts here (FrontEndHandoff)
+            // and the switch runs on this, the activity's main thread. `pocket` picks the front end.
+            for (pocket in FrontEndHandoff.requests) {
+                launchSafely {
+                    val target = if (pocket) "io.github.artcraftandroid.wordcraft.MainActivity" else "android.app.NativeActivity"
+                    startActivity(Intent().setClassName(packageName, target).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
+                }
+            }
+        }
         if (savedInstanceState == null) handle(intent)
     }
 
@@ -174,5 +186,19 @@ class MainActivity : ComponentActivity() {
             Intent.ACTION_EDIT -> vm.open(uri, writable = true)
             io.github.artcraftandroid.wordcraft.ui.ACTION_OPEN_PINNED -> vm.openPinned(uri)
         }
+    }
+}
+
+/**
+ * Pocket Mode hand-off requests coming from egui's native thread. Rust's JNI calls `requestPocket`
+ * directly; `requests` is drained by MainActivity's main-thread loop, which performs the actual
+ * `startActivity` — Android can silently drop an activity started from a background thread.
+ */
+object FrontEndHandoff {
+    val requests = Channel<Boolean>(Channel.CONFLATED)
+
+    @JvmStatic
+    fun requestPocket(pocket: Boolean) {
+        requests.trySend(pocket)
     }
 }

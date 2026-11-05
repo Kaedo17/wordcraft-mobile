@@ -177,45 +177,38 @@ impl AndroidAccess {
         }
     }
 
-    /// Hand the session to the Compose app: start its activity, which loads the same document and
-    /// shows the pocket UI. `pocket` picks the direction — its `MainActivity` for the pocket front
-    /// end, this app's own `NativeActivity` to come back.
+    /// Hand the session to the other front end. `pocket` picks the direction — the Compose
+    /// app's `MainActivity` for the pocket front end, this app's own `NativeActivity` to come
+    /// back.
     ///
     /// Android has no way to swap one activity's UI for another's in place (each owns its window
     /// and its loop), so the switch is a hand-off: the caller has already made the document safe,
-    /// and the activity this call starts re-opens it. The intent is explicit (`setClassName`), so
-    /// nothing outside this APK can be reached, and `FLAG_ACTIVITY_CLEAR_TOP` keeps one instance of
-    /// each front end rather than a stack of them.
+    /// and the activity this call starts re-opens it.
     ///
-    /// Best effort, like the storage grant: an unreachable JVM or a refusing device logs and
+    /// This call runs on egui's native thread, where Android (14+) can silently drop an activity
+    /// started from a background thread, so the request is posted to the phone app's Kotlin object
+    /// (`FrontEndHandoff.requestPocket`) and its main-thread loop performs the `startActivity` —
+    /// with an explicit in-app intent and `FLAG_ACTIVITY_CLEAR_TOP`, keeping one instance of each
+    /// front end and reaching nothing outside this APK.
+    ///
+    /// Best effort, like the storage grant: an unreachable JVM or a missing phone app logs and
     /// returns `false`, and the caller reports that the switch did not happen rather than
     /// pretending it did.
     pub fn start_other_front_end(self, pocket: bool) -> bool {
         let target = if pocket { COMPOSE_ACTIVITY } else { EGUI_ACTIVITY };
         let started = self.with_env(|env| -> jni::errors::Result<bool> {
-            let act = self.activity();
-            // intent = new Intent(); intent.setClassName(package, target) — the package is the
-            // running app's own, so the debug build's `applicationIdSuffix` resolves correctly.
-            let intent = env.new_object("android/content/Intent", "()V", &[])?;
-            let pkg_text = Self::runtime_package(env, &act)?;
-            let pkg = env.new_string(pkg_text.as_str())?;
-            let cls = env.new_string(target)?;
-            env.call_method(
-                &intent,
-                "setClassName",
-                "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;",
-                &[JValue::Object(&pkg), JValue::Object(&cls)],
+            env.call_static_method(
+                "io/github/artcraftandroid/wordcraft/FrontEndHandoff",
+                "requestPocket",
+                "(Z)V",
+                &[JValue::Bool(pocket as jni::sys::jboolean)],
             )?;
-            // FLAG_ACTIVITY_CLEAR_TOP (0x04000000): reuse an existing instance of the target.
-            env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x0400_0000)])?;
-            // activity.startActivity(intent)
-            env.call_method(&act, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
             Self::started(env)
         });
         match started {
             Some(true) => true,
             _ => {
-                log::warn!("android access: could not start the {target} activity");
+                log::warn!("android access: could not ask the phone app to switch front ends ({target} stayed behind)");
                 false
             }
         }
