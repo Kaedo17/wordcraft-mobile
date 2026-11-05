@@ -128,6 +128,12 @@ fun OverflowSheet(vm: AppViewModel, visible: Boolean, onSaveAs: () -> Unit, modi
                         vm.dictationRequests.trySend(Unit)
                     }
                 }
+                // The desktop-style front end of this same APK (the egui app): its own session,
+                // which opens documents through its own browser; the phone hands off on Pocket Mode.
+                OverflowRow("Open Desktop Interface", LucideIcons.Monitor.glyph()) {
+                    close()
+                    vm.desktopRequests.trySend(Unit)
+                }
                 Box(Modifier.fillMaxWidth().height(1.dp).background(WordColors.Divider))
                 OverflowRow("Settings", LucideIcons.Settings.glyph()) {
                     close()

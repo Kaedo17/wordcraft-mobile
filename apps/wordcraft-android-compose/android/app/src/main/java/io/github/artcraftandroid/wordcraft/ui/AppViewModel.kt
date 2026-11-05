@@ -143,6 +143,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Requests to pick where to save a copy (the suggested file name). */
     val saveAsRequests = Channel<String>(Channel.CONFLATED)
 
+    /** Requests to open the egui front end — the same APK's desktop-style activity. */
+    val desktopRequests = Channel<Unit>(Channel.CONFLATED)
+
     private val recentFiles = io.github.artcraftandroid.wordcraft.engine.RecentFiles(java.io.File(app.filesDir, "recent.json"))
 
     /** The documents opened before, newest first (the landing page's Recent). */

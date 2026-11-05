@@ -130,6 +130,16 @@ class MainActivity : ComponentActivity() {
                 launchSafely { listen.launch(ask) }
             }
         }
+        lifecycleScope.launch {
+            for (unit in vm.desktopRequests) {
+                // The egui front end lives in this APK (`android.app.NativeActivity`, not exported),
+                // so an explicit in-app intent is the only way to reach it; CLEAR_TOP keeps one of each.
+                launchSafely {
+                    val desktop = Intent().setClassName(packageName, "android.app.NativeActivity").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    startActivity(desktop)
+                }
+            }
+        }
         if (savedInstanceState == null) handle(intent)
     }
 
