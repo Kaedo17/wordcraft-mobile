@@ -70,6 +70,20 @@ There is only one front end, so the switch cannot hand off — `Services::pocket
 and the app applies the pocket presentation alone (the fixed phone-width column). This is what
 keeps the feature testable headlessly, without a device.
 
+## What is verified, and what is not
+
+Verified (2026-11-05): the layout mode (5 tests, including that `mobile: false` changes nothing),
+the engine commands and their persistence, the View › Views toggle and the `ui.json` round trip,
+the 52-test bridge suite, `cargo xtask layers` (23 crates) and `cargo xtask assets`; and that **both**
+Android libraries cross-compile for arm64 (`libwordcraft_android_bridge.so` and
+`libwordcraft_android.so`, the latter with `android_main` exported).
+
+Not verified here: **a full APK build and an on-device run of the hand-off.** The Gradle project
+configures, but the build needs NDK 29 (this machine has 30) and a JDK 17–21 (it has 25); and the
+heavier Rust links (`ui_shot`, the engine test binary) exceed this shared machine's free memory, so
+the headless screenshot comparison is outstanding too. The APK is the next thing to run where that
+toolchain and memory exist; `apps/wordcraft-android-compose/BUILD-NOTES.md` states the same.
+
 ## Testing
 
 - `crates/layout/src/tests.rs`: the mobile layout, and that `mobile: false` changes nothing.
