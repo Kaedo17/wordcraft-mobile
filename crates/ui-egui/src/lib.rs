@@ -372,6 +372,13 @@ pub struct UiState {
     /// View › Switch Modes: show pages dark (white text on black), kept between runs. Only the
     /// pages: the interface follows [`UiState::theme`] (#312).
     pub dark_page: bool,
+    /// View › Views › Pocket Mode: the page reflowed to a phone's column, kept between runs. The
+    /// session owns it while running (see [`WordApp::prefs`]); the width is below.
+    pub pocket_mode: bool,
+    /// The column Pocket Mode reflows to, in points. Junk or out-of-range saved values read as the
+    /// default 360, the same discipline as the engine's own `pocketWidth` view state.
+    #[serde(deserialize_with = "lenient_pocket_width")]
+    pub pocket_width: f32,
     /// File › Options › Proofing › Check spelling as you type, kept between runs (#1792).
     pub check_spelling: bool,
     /// File › Options › Advanced › Animation: the caret glides to its new place and its blink
@@ -472,6 +479,8 @@ impl Default for UiState {
             alt_key_down: false,
             alt_modifier_seen: false,
             dark_page: false,
+            pocket_mode: false,
+            pocket_width: wordcraft_engine::cmd::view::DEFAULT_POCKET_WIDTH,
             check_spelling: true,
             caret_animation: true,
             keyboard: wordcraft_engine::KeyMap::default(),
@@ -561,6 +570,13 @@ fn lenient_float_rect<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<[
 
 /// `recentFonts` as saved, through [`recent_fonts_from`]: an entry that isn't a name is dropped,
 /// not the whole list.
+/// A saved pocket width that isn't a finite number, or is out of range, reads as the default (360),
+/// without losing the rest of the UI state. The engine's own `pocketWidth` view state clamps the
+/// same way, so `ui.json` and the session agree on what a written value means.
+fn lenient_pocket_width<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(wordcraft_engine::cmd::view::pocket_width_or_default(&serde_json::Value::deserialize(d)?))
+}
+
 fn lenient_recent_fonts<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     let v = Value::deserialize(d)?;
     Ok(v.as_array().map(|a| recent_fonts_from(a.iter().filter_map(Value::as_str))).unwrap_or_default())
@@ -983,6 +999,8 @@ impl WordApp {
         ui.read_aloud_rate = self.session.read_aloud.rate();
         ui.read_aloud_skip_citations = self.session.read_aloud.skip_citations;
         ui.dark_page = self.session.view.dark_mode;
+        ui.pocket_mode = self.session.view.mobile;
+        ui.pocket_width = self.session.view.pocket_width;
         ui.nav_pane = self.session.view.nav_pane;
         ui.styles_pane_dock = self.session.view.styles_pane_dock;
         ui.check_spelling = self.session.view.proofing;
@@ -1032,6 +1050,15 @@ impl WordApp {
         self.session.read_aloud.set_rate(self.ui.read_aloud_rate);
         self.session.read_aloud.skip_citations = self.ui.read_aloud_skip_citations;
         self.session.view.dark_mode = self.ui.dark_page;
+        // Pocket Mode and its column (#1876: a fixed phone width, unlike Web Layout's window width).
+        // Going through the commands keeps the view mode and the layout in step with the flag, so a
+        // saved pocket mode opens in Web Layout rather than Print.
+        self.session.view.pocket_width = self.ui.pocket_width;
+        if self.ui.pocket_mode != self.session.view.mobile {
+            // A saved value only: the command's own status message is not what opening a document
+            // should report, so it is dropped.
+            let _ = self.run("view.pocketMode", json!({ "value": self.ui.pocket_mode }));
+        }
         self.session.view.nav_pane = self.ui.nav_pane;
         self.session.view.styles_pane_dock = self.ui.styles_pane_dock;
         self.session.view.proofing = self.ui.check_spelling;
@@ -8770,6 +8797,47 @@ mod tests {
             assert_eq!((InterfaceSize::AUTO.zoom_factor(native), InterfaceSize::AUTO.drawn_percent(native)), (1.0, 100), "{native}");
         }
         assert_eq!(InterfaceSize::AUTO.drawn_percent(f32::MAX), u16::MAX);
+    }
+
+    /// Pocket Mode and its column survive a restart through `ui.json`, and a saved value that is
+    /// junk (or out of range) reads as the default — the same discipline as the engine's own
+    /// `pocketWidth` view state, so the two agree on what a written number means.
+    #[test]
+    fn pocket_mode_and_width_survive_a_restart_and_clamp_junk() {
+        let mut a = app();
+        assert!(!a.session.view.mobile, "pocket mode is off to begin with");
+        assert_eq!(a.session.view.pocket_width, wordcraft_engine::cmd::view::DEFAULT_POCKET_WIDTH);
+        a.run("view.pocketMode", json!({"value": true})).unwrap();
+        a.run("view.pocketWidth", json!({"value": 420})).unwrap();
+        assert!(a.session.view.mobile);
+        let saved = serde_json::to_string(&a.prefs()).unwrap();
+        assert!(saved.contains(r#""pocketMode":true"#), "{saved}");
+        assert!(saved.contains(r#""pocketWidth":420"#), "{saved}");
+
+        let mut b = app();
+        b.apply_prefs(serde_json::from_str(&saved).unwrap());
+        assert!(b.session.view.mobile, "pocket mode comes back on");
+        assert_eq!(b.session.view.pocket_width, 420.0);
+        assert_eq!(b.session.view.mode, wordcraft_layout::ViewMode::Web, "and the pocket column is laid out");
+
+        // Junk in `ui.json` reads as the default rather than failing the whole load or reaching
+        // the layout. A pre-feature file simply has neither key.
+        for (raw, want_mode, want_width) in [
+            (r#"{"pocketMode":true,"pocketWidth":"wide"}"#, true, 360.0),
+            (r#"{"pocketMode":true,"pocketWidth":null}"#, true, 360.0),
+            // A finite number is clamped into range (1e30 → 4000, -8 → 72); only a value that
+            // isn't a number at all reads as the default.
+            (r#"{"pocketWidth":1e30}"#, false, 4000.0),
+            (r#"{"pocketWidth":-8}"#, false, 72.0),
+            (r#"{"tab":"Insert"}"#, false, 360.0),
+        ] {
+            let ui: UiState = serde_json::from_str(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
+            let mut c = app();
+            c.apply_prefs(ui);
+            assert_eq!(c.session.view.mobile, want_mode, "{raw}");
+            assert_eq!(c.session.view.pocket_width, want_width, "{raw}");
+            assert!(c.session.view.pocket_width.is_finite(), "{raw}: never a non-finite width");
+        }
     }
 
     /// #115: System follows the OS appearance (light when unknown); the manual choices ignore it.

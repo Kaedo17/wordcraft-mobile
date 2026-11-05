@@ -137,6 +137,9 @@ pub struct LayoutOptions {
     pub view: ViewMode,
     /// Width of the window in Web/Draft views, points.
     pub web_width: f32,
+    /// Web Layout as the phone app's Mobile View: indents and default tab stops in proportion to
+    /// the screen, list labels closer to their text, table cells without side margins.
+    pub mobile: bool,
     /// Page height in Reading Mode (document points).
     pub read_height: f32,
     /// Transient read-only line-spacing override; ignored by print/export views.
@@ -525,6 +528,8 @@ struct Key {
     sref: u64,
     /// The word being typed in this paragraph, left without a spelling squiggle.
     typing: Option<(usize, usize)>,
+    /// Mobile View's indent scale ([`para::ParaEnv::mobile`]), as bits.
+    mobile: Option<u32>,
 }
 
 /// Memoised paragraph layouts.
@@ -745,6 +750,8 @@ struct Ctx<'a> {
     hf: Arc<HfLinks<'a>>,
     /// Pictures' transparency, decoded for Tight and Through wrapping ([`Ctx::wrap_outline`]).
     alphas: contour::Alphas,
+    /// In Mobile View, the screen's text width over the document's ([`para::ParaEnv::mobile`]).
+    mobile_scale: Option<f32>,
 }
 
 /// A header or footer (`story`) laid out for page `number` of a section (`sect`, `mirror`): its
@@ -823,6 +830,11 @@ fn picture_outline(
 }
 
 impl Ctx<'_> {
+    /// Laying out the phone app's Mobile View ([`LayoutOptions::mobile`] in Web Layout).
+    pub(crate) fn mobile(&self) -> bool {
+        self.opts.mobile && self.opts.view == ViewMode::Web
+    }
+
     /// The outline Tight and Through wrapping follow around `o` (see [`contour::wrap_outline`]);
     /// pictures' are worked out once per picture and crop.
     fn wrap_outline(&mut self, o: &InlineObject) -> Option<Arc<Vec<(f32, f32)>>> {
@@ -862,6 +874,7 @@ impl Ctx<'_> {
             read_line_spacing: None,
             grid: para::Grid::default(),
             fit_objects: false,
+            mobile: None,
             fitted: &[],
         };
         let pl = Arc::new(para::layout_para(&p, &env));
@@ -1001,6 +1014,7 @@ impl Ctx<'_> {
             hide_deleted: self.hide_deleted,
             sref: if self.fields.styleref.is_some() && styleref::has_styleref(p) { self.fields.styleref_key(p) } else { 0 },
             typing: self.opts.typing_word.filter(|t| t.rev == p.rev).map(|t| (t.start, t.end)),
+            mobile: self.mobile_scale.map(f32::to_bits),
         };
         (key, eq_number)
     }
@@ -1047,6 +1061,7 @@ impl Ctx<'_> {
             read_line_spacing: if self.opts.view == ViewMode::Read { self.opts.read_line_spacing } else { None },
             grid: self.grid,
             fit_objects: self.boxes.inside(),
+            mobile: self.mobile_scale,
             fitted,
         }
     }
@@ -2257,9 +2272,80 @@ impl PageBuilder<'_> {
 /// depend on the pages they land on, which (barely) depend on the numbers' widths.
 const MAX_NOTE_PASSES: usize = 3;
 
+/// Mobile View's screen padding across, points: what [`layout`] takes off the web column's width
+/// for the text ([`inline_wrapped_floats`]'s `mobile_col`).
+const MOBILE_SCREEN_PAD: f32 = 36.0;
+
+/// Deepest tables inside tables [`inline_wrapped_floats`] looks into.
+const MAX_REFLOW_DEPTH: usize = 16;
+
+/// The document with the drawings text wraps round (Square, Tight, Through, Top and Bottom) in
+/// line with the text where they are anchored, as the reflowed views show them: a page's
+/// positions mean nothing on a screen-wide column, so in the flow, shrunk to the screen when
+/// wider (see `ParaEnv::fit_objects`). Mobile View (with its column's width, `mobile_col`)
+/// keeps the ones the text wraps beside floating, at the left of their paragraph's top, their
+/// side distance in, the text beside them, as the reference does with whatever position the
+/// page gave them; those wider than the screen, and Top and Bottom ones, go in the flow.
+/// Drawings behind or in front of the text stay where they are. `None` when there are none (the
+/// document as it is).
+fn inline_wrapped_floats(doc: &Document, mobile_col: Option<f32>) -> Option<Document> {
+    fn wrapped(o: &InlineObject) -> bool {
+        o.frame().is_some_and(|(_, _, f)| matches!(f.wrap, Wrap::Square | Wrap::Tight | Wrap::Through | Wrap::TopAndBottom))
+    }
+    fn has(b: &Block, depth: usize) -> bool {
+        match b {
+            Block::Para(p) => p.objects.iter().any(wrapped),
+            Block::Table(t) => depth < MAX_REFLOW_DEPTH && t.rows.iter().flat_map(|r| &r.cells).flat_map(|c| &c.blocks).any(|b| has(b, depth + 1)),
+        }
+    }
+    fn inline(blocks: &mut Blocks, depth: usize, mobile_col: Option<f32>) {
+        for b in blocks.iter_mut().filter(|b| has(b, depth)) {
+            match Arc::make_mut(b) {
+                Block::Para(p) => {
+                    for o in p.objects.iter_mut().filter(|o| wrapped(o)) {
+                        let w = o.frame().map_or(f32::MAX, |(w, _, _)| w);
+                        if let Some(f) = o.float_mut() {
+                            match mobile_col {
+                                Some(col) if f.wrap != Wrap::TopAndBottom && w + f.dist <= col => {
+                                    (f.h_rel, f.h_align, f.x) = (Anchor::Column, None, f.dist.max(0.0));
+                                    (f.v_rel, f.v_align, f.y) = (Anchor::Paragraph, None, 0.0);
+                                    f.wrap_text = WrapText::BothSides;
+                                }
+                                _ => f.wrap = Wrap::Inline,
+                            }
+                        }
+                    }
+                }
+                Block::Table(t) => {
+                    for c in t.rows.iter_mut().flat_map(|r| r.cells.iter_mut()) {
+                        inline(&mut c.blocks, depth + 1, mobile_col);
+                    }
+                }
+            }
+        }
+    }
+    if !doc.body.iter().any(|b| has(b, 0)) {
+        return None;
+    }
+    let mut d = doc.clone();
+    inline(&mut d.body, 0, mobile_col);
+    Some(d)
+}
+
 /// Lay out the whole document.
 pub fn layout(doc: &Document, cache: &mut LayoutCache, opts: &LayoutOptions) -> DocLayout {
     let t0 = now_ms();
+    // The reflowed views (Mobile View, Read) put the drawings text wraps round in the text, or
+    // (Mobile View) at the left of their paragraphs.
+    let reflowed;
+    let mobile_col = (opts.mobile && opts.view == ViewMode::Web).then_some(opts.web_width - MOBILE_SCREEN_PAD);
+    let doc = match matches!(opts.view, ViewMode::Web | ViewMode::Read).then(|| inline_wrapped_floats(doc, mobile_col)).flatten() {
+        Some(d) => {
+            reflowed = d;
+            &reflowed
+        }
+        None => doc,
+    };
     // Page totals shown in the body (`NUMPAGES`, `SECTIONPAGES`) are known only after
     // paginating: lay out again with the totals found until they hold (bounded). Footnotes
     // numbered again on each page likewise settle over a few more passes.
@@ -2362,6 +2448,7 @@ fn layout_pass(
         floats_above: HashMap::new(),
         hf: Arc::new(HfLinks::new(doc.sections())),
         alphas: Default::default(),
+        mobile_scale: None,
     };
     let hf = Arc::clone(&ctx.hf);
     let sections = &hf.sections;
@@ -2407,6 +2494,13 @@ fn layout_pass(
         web_sect.gutter = 0.0;
         web_sect.columns = Default::default();
         web_sect.valign = wordcraft_doc::section::PageVAlign::Top;
+        // Mobile View keeps indents in proportion: the screen's text width over the page's
+        // (measured against the reference on two page widths)
+        if ctx.mobile() {
+            let page = first_sect.page_w - first_sect.margin_left - first_sect.margin_right - first_sect.gutter;
+            let screen = web_sect.page_w - web_sect.margin_left - web_sect.margin_right;
+            ctx.mobile_scale = Some(if page > 1.0 && screen > 0.0 { (screen / page).clamp(0.05, 1.0) } else { 1.0 });
+        }
         &web_sect
     } else {
         first_sect
@@ -3416,7 +3510,9 @@ fn anchor_floats(
     ctx.fields.page = pb.number;
     let (col_x, width) = (pb.col_x(), pb.col_w());
     let mut rects = HashMap::new();
-    if !pb.web && place {
+    // Mobile View's floats are placed against their column and paragraph (see
+    // `inline_wrapped_floats`), and the text wraps beside them as on a page
+    if (!pb.web || ctx.mobile()) && place {
         // (A mark from a page before may be short of the areas this page started with.)
         pb.excl.truncate(excl_mark.max(pb.seeded));
         let page = pb.pages.len().saturating_sub(1);
@@ -4359,6 +4455,7 @@ fn next_first_line(ctx: &mut Ctx, block: usize, width: f32, depth: usize, counte
                 read_line_spacing: if ctx.opts.view == ViewMode::Read { ctx.opts.read_line_spacing } else { None },
                 grid: ctx.grid,
                 fit_objects: false,
+                mobile: ctx.mobile_scale,
                 fitted: &[],
             };
             let pl = para::layout_para(p, &env);

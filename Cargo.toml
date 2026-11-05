@@ -1,6 +1,16 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/*", "xtask"]
+members = [
+    "crates/*",
+    # The apps are named one by one: `apps/*` would try to read a Cargo.toml in
+    # `apps/wordcraft-android-compose`, which is a Kotlin/Gradle project (its Rust half lives in
+    # `crates/android-bridge`), and only its binding generator is a crate.
+    "apps/wordcraft",
+    "apps/wordcraft-cli",
+    "apps/wordcraft-web",
+    "apps/wordcraft-android-compose/bindgen",
+    "xtask",
+]
 default-members = ["crates/*", "apps/wordcraft", "apps/wordcraft-cli", "xtask"]
 
 [workspace.package]
@@ -24,6 +34,7 @@ wordcraft-pdf = { path = "crates/pdf" }
 wordcraft-proof = { path = "crates/proof" }
 wordcraft-engine = { path = "crates/engine" }
 wordcraft-mcp = { path = "crates/mcp" }
+wordcraft-android-bridge = { path = "crates/android-bridge" }
 wordcraft-zotero = { path = "crates/zotero" }
 wordcraft-control-key = { path = "crates/control-key" }
 wordcraft-ui-egui = { path = "crates/ui-egui" }

@@ -271,6 +271,8 @@ impl WordApp {
             read_aloud_skip_citations: _,
             keytips_enabled: _,
             dark_page: _,
+            pocket_mode: _,
+            pocket_width: _,
             check_spelling: _,
             caret_animation: _,
             keyboard: _,

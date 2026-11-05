@@ -2289,6 +2289,14 @@ fn view(app: &mut WordApp, ui: &mut Ui) {
         big(ui, app, "readMode", "Read\nMode", "view.readMode", json!({}), false);
         big(ui, app, "printLayout", "Print\nLayout", "view.printLayout", json!({}), false);
         big(ui, app, "webLayout", "Web\nLayout", "view.webLayout", json!({}), false);
+        // Pocket Mode reflows the page to a fixed phone width instead of the window (#1876's Web
+        // Layout wraps to the work area; this one does not move with the window). The button
+        // carries its name for assistive technology (and for the regression test that clicks it),
+        // as the Full Screen button does: big buttons are otherwise drawn unlabeled. Its enabled
+        // state is the command's own, as every other ribbon control reports.
+        let pocket_on = crate::widgets::enabled(app, "view.pocketMode");
+        let resp = big_toggle(ui, app, "pocketMode", "Pocket\nMode", "view.pocketMode", v.mobile);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, pocket_on, v.mobile, "Pocket Mode"));
         stack(ui, |ui| {
             small(ui, app, "outline", Some("Outline"), "Outline", "view.outline", json!({}), false);
             small(ui, app, "draft", Some("Draft"), "Draft", "view.draft", json!({}), false);
@@ -3642,6 +3650,42 @@ mod tests {
         }
         let _ = plan_strip(&[], buttons, 100.0, 26.0);
         let _ = plan_strip(&[spec(f32::NAN, false, true, false)], [f32::NAN; 3], 100.0, f32::NAN);
+    }
+
+    /// View › Views › Pocket Mode: the switch is drawn in the Views group beside Read Mode, Print
+    /// Layout and Web Layout, carries a name for assistive technology, reflects the engine's state,
+    /// and clicking it runs `view.pocketMode` — which reflows the page to the pocket column and
+    /// returns to Print Layout when switched off.
+    #[test]
+    fn pocket_mode_toggle_lives_in_the_views_group_and_runs_its_command() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = WordApp::new(Session::new(wordcraft_doc::Document::from_text("Text")), crate::Services::default());
+        app.run("ui.tab", json!({"tab": "View"})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        // The control carries its name for assistive technology — the reason the Full Screen
+        // button does the same: big buttons are otherwise drawn unlabeled, so a screen reader (and
+        // this test) could not find them. `ui.tab` put the View tab up, so this is the Views group.
+        assert!(h.query_by_label(tl!("Pocket Mode")).is_some(), "the switch is on the View tab");
+        assert!(!h.state().session.view.mobile, "off to begin with");
+        h.get_by_label(tl!("Pocket Mode")).click();
+        h.run_steps(3);
+        let s = &h.state().session.view;
+        assert!(s.mobile, "the click turned Pocket Mode on");
+        assert_eq!(s.mode, wordcraft_layout::ViewMode::Web, "and entered the pocket column's Web Layout");
+        // The button now reads as pressed, and clicking again turns it off.
+        h.get_by_label(tl!("Pocket Mode")).click();
+        h.run_steps(3);
+        let s = &h.state().session.view;
+        assert!(!s.mobile, "the second click turned it off");
+        assert_eq!(s.mode, wordcraft_layout::ViewMode::Print, "and returns to Print Layout");
     }
 
     /// #1110: the strip's drawn buttons have names for screen readers: Share, and the "»" that

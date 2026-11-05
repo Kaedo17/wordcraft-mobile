@@ -11631,3 +11631,171 @@ fn a_row_leaves_room_for_the_border_below_it() {
         }
     }
 }
+
+/// Mobile View keeps indents and default tab stops in proportion to the screen: the screen's text
+/// width over the page's (measured against the reference on Letter and on A4 with narrow
+/// margins). A set stop stays where it is, unless it is past the line's end: then the text goes
+/// to the next default stop, as the reference does.
+#[test]
+fn mobile_view_scales_indents_and_default_tabs() {
+    use wordcraft_doc::props::{TabAlign, TabStop};
+    let mut d = Document::from_text("indented\na\tb\nset\tstop\tpast");
+    d.last_section.page_w = 612.0;
+    (d.last_section.margin_left, d.last_section.margin_right, d.last_section.gutter) = (72.0, 72.0, 0.0);
+    d.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.indent_left = Some(72.0)).unwrap();
+    d.format_paragraphs(&Pos::body(2, 0), &Pos::body(2, 0), &|p| {
+        p.tabs = Some(vec![
+            TabStop { pos: 144.0, align: TabAlign::Left, leader: Default::default() },
+            TabStop { pos: 288.0, align: TabAlign::Right, leader: Default::default() },
+        ])
+    })
+    .unwrap();
+    let opts = LayoutOptions { view: ViewMode::Web, web_width: 303.2, mobile: true, ..Default::default() };
+    let l = layout(&d, &mut LayoutCache::new(), &opts);
+    let k = (303.2 - 36.0) / 468.0;
+    let x = |para: usize, off: usize| l.caret(&Pos::body(para, off)).unwrap().x - l.caret(&Pos::body(1, 0)).unwrap().x;
+    assert!((x(0, 0) - 72.0 * k).abs() < 0.5, "indent: {}", x(0, 0));
+    assert!((x(1, 2) - 36.0 * k).abs() < 0.5, "default stop: {}", x(1, 2));
+    assert!((x(2, 4) - 144.0).abs() < 0.5, "set stop: {}", x(2, 4));
+    let next = ((x(2, 8) / (36.0 * k)).floor() + 1.0) * 36.0 * k;
+    assert!((x(2, 9) - next).abs() < 0.5, "a set stop past the line's end: {} (next default {next})", x(2, 9));
+    // Print Layout and plain Web Layout keep the file's indents
+    for opts in [LayoutOptions { mobile: true, ..Default::default() }, LayoutOptions { mobile: false, ..opts }] {
+        let l = layout(&d, &mut LayoutCache::new(), &opts);
+        let x0 = l.caret(&Pos::body(0, 0)).unwrap().x - l.caret(&Pos::body(1, 0)).unwrap().x;
+        assert!((x0 - 72.0).abs() < 0.5, "{:?}: {x0}", opts.view);
+    }
+}
+
+/// Mobile View sizes a line of only a picture by the picture, with the spacing's extra below and
+/// no ascent or descent of the text around it (measured against the reference); a line with text
+/// beside the picture keeps the descent, and Print Layout is as before.
+#[test]
+fn mobile_view_lines_of_only_pictures_take_their_height() {
+    use wordcraft_doc::props::LineSpacing;
+    let lay_line = |text: &str, spacing: LineSpacing, mobile: bool, pic: bool| {
+        let mut d = Document::from_text(text);
+        d.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.line_spacing = Some(spacing)).unwrap();
+        if pic {
+            d.insert_object(&Pos::body(0, 0), picture(100.0, 40.0, Default::default()), &Default::default()).unwrap();
+        }
+        let opts = LayoutOptions { view: ViewMode::Web, web_width: 303.2, mobile, ..Default::default() };
+        let l = layout(&d, &mut LayoutCache::new(), &opts);
+        let Some(Placed::Lines { para, .. }) = l.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+        let first = &para.lines[0];
+        (first.height, first.baseline - first.top)
+    };
+    let line = |text: &str, spacing: LineSpacing, mobile: bool| lay_line(text, spacing, mobile, true);
+    let (h, b) = line("", LineSpacing::Multiple(1.0), true);
+    assert!((h - 40.0).abs() < 0.01 && (b - 40.0).abs() < 0.01, "only the picture: {h} {b}");
+    // the multiple's extra, from the text's natural height, below
+    let natural = lay_line("x", LineSpacing::Multiple(1.0), true, false).0;
+    let (h2, b2) = line("", LineSpacing::Multiple(1.15), true);
+    let extra = lay_line("x", LineSpacing::Multiple(1.15), true, false).0 - natural;
+    assert!(extra > 0.0 && (h2 - 40.0 - extra).abs() < 0.05 && (b2 - 40.0).abs() < 0.01, "{h2} {b2} (extra {extra})");
+    // text beside it keeps its descent under the picture, and the extra goes below that
+    let (with_text, _) = line("x", LineSpacing::Multiple(1.0), true);
+    assert!(with_text > 40.5, "{with_text}");
+    let (with_text2, b3) = line("x", LineSpacing::Multiple(1.15), true);
+    assert!((with_text2 - with_text - extra).abs() < 0.05 && (b3 - 40.0).abs() < 0.01, "{with_text2} vs {with_text} + {extra}");
+    // Print Layout keeps the descent under a picture alone
+    let (print, _) = line("", LineSpacing::Multiple(1.0), false);
+    assert!(print > 40.5, "{print}");
+}
+
+/// Mobile View narrows a table wider than the screen to fit it, as the reference does; Print
+/// Layout leaves one a little wider than its room as it is.
+#[test]
+fn mobile_view_fits_a_wide_table_to_the_screen() {
+    let width = |mobile: bool| {
+        let mut d = Document::from_text("x");
+        d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(Table::new(1, 2, 300.0))).unwrap();
+        let opts = LayoutOptions { view: ViewMode::Web, web_width: 303.2, mobile, ..Default::default() };
+        let l = layout(&d, &mut LayoutCache::new(), &opts);
+        let cells: Vec<Rect> = l.pages[0].items.iter().filter_map(|i| if let Placed::Cell { rect, .. } = i { Some(*rect) } else { None }).collect();
+        cells.iter().map(|r| r.right()).fold(0.0f32, f32::max) - cells.iter().map(|r| r.x).fold(f32::MAX, f32::min)
+    };
+    assert!((width(true) - (303.2 - 36.0)).abs() < 0.5, "{}", width(true));
+    assert!((width(false) - 300.0).abs() < 0.5, "{}", width(false));
+}
+
+/// Mobile View keeps a picture the text wraps beside floating at the left of its paragraph, its
+/// side distance in, whatever position the page gave it, the text beside it, as the reference
+/// does.
+#[test]
+fn mobile_view_floats_wrapped_pictures_at_the_left_of_their_paragraph() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    let mut d = Document::from_text(&"The garden gets three new beds this spring and a pond. ".repeat(6));
+    let float = Float { wrap: Wrap::Square, h_rel: Anchor::Margin, v_rel: Anchor::Page, x: 348.0, y: 500.0, dist: 9.0, ..Default::default() };
+    d.insert_object(&Pos::body(0, 0), picture(120.0, 60.0, float), &Default::default()).unwrap();
+    let opts = LayoutOptions { view: ViewMode::Web, web_width: 303.2, mobile: true, ..Default::default() };
+    let l = layout(&d, &mut LayoutCache::new(), &opts);
+    let page = &l.pages[0];
+    let pic = page.items.iter().find_map(|i| if let Placed::Shape { rect, .. } = i { Some(*rect) } else { None }).expect("the picture floats");
+    let Some(Placed::Lines { para, x, y, .. }) = page.items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+    assert!((pic.x - (x + 9.0)).abs() < 0.5 && (pic.y - y).abs() < 0.5, "{pic:?} at {x} {y}");
+    // the first line runs beside it, the text (after the anchor's mark) clear of it by the
+    // distance
+    let first = para.x_of(0, para.lines[0].start + wordcraft_doc::para::OBJ.len_utf8()).unwrap() + x;
+    assert!(first >= pic.right() + 8.5, "{first} beside {pic:?}");
+}
+
+/// `mobile: false` is inert: the layout is exactly the one `LayoutOptions::default()` gives, so
+/// every existing caller (which never sets the field) is byte-for-byte unchanged.
+#[test]
+fn mobile_false_lays_out_exactly_as_today() {
+    // A document with the features mobile touches: indents, a list, a wide table and a wrapped
+    // floating picture. Laying it out with `mobile: false` must equal the default run exactly.
+    let build = || {
+        let mut d = Document::from_text("Indented paragraph with enough words to wrap onto a second line.\nSecond paragraph, plain.\nA\tb\tc");
+        d.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.indent_left = Some(48.0)).unwrap();
+        let id = d.numbering.add_list(wordcraft_doc::ListKind::Bullet);
+        d.format_paragraphs(&Pos::body(1, 0), &Pos::body(1, 0), &|p| p.numbering = Some(wordcraft_doc::props::NumRef { num: id, level: 0 })).unwrap();
+        d.insert_block(StoryRef::Body, &Path::top(3), wordcraft_doc::Block::Table(Table::new(1, 2, 300.0))).unwrap();
+        let float = wordcraft_doc::para::Float { wrap: wordcraft_doc::para::Wrap::Square, dist: 9.0, ..Default::default() };
+        d.insert_object(&Pos::body(0, 0), picture(120.0, 60.0, float), &Default::default()).unwrap();
+        d
+    };
+    // Every view mobile could apply to, plus the print view.
+    for view in [ViewMode::Web, ViewMode::Read, ViewMode::Print, ViewMode::Draft] {
+        let doc = build();
+        let today = LayoutOptions { view, web_width: 303.2, ..Default::default() };
+        let explicit = LayoutOptions { mobile: false, ..today.clone() };
+        assert!(!today.mobile, "the default keeps mobile off");
+        let a = layout(&doc, &mut LayoutCache::new(), &today);
+        let b = layout(&doc, &mut LayoutCache::new(), &explicit);
+        assert_eq!(a.pages.len(), b.pages.len(), "{view:?}: page count");
+        for (p, q) in a.pages.iter().zip(&b.pages) {
+            assert_eq!(p.items.len(), q.items.len(), "{view:?}: items");
+            for (i, j) in p.items.iter().zip(&q.items) {
+                assert_eq!(format!("{i:?}"), format!("{j:?}"), "{view:?}: an item differs");
+            }
+        }
+        // And the caret geometry a caller reads is the same too.
+        for block in 0..doc.body.len() {
+            for off in 0..4 {
+                let pos = Pos::body(block, off);
+                assert_eq!(a.caret(&pos).map(|c| (c.x, c.top)), b.caret(&pos).map(|c| (c.x, c.top)), "{view:?}: caret at {pos:?}");
+            }
+        }
+    }
+    // The line-metrics port consults the requested family for a proprietary stand-in (Aptos), the
+    // one place `mobile: false` could have changed a layout: it must take the plain metrics.
+    for (family, size) in [("Aptos", 11.0), ("Aptos Display", 20.0), ("Calibri", 12.0)] {
+        let mut doc = Document::from_text("A line of text long enough to measure its height.");
+        doc.styles.default_chr.font = Some(family.into());
+        doc.styles.default_chr.size = Some(size);
+        for view in [ViewMode::Web, ViewMode::Print] {
+            let today = LayoutOptions { view, web_width: 303.2, ..Default::default() };
+            let explicit = LayoutOptions { mobile: false, ..today.clone() };
+            let a = layout(&doc, &mut LayoutCache::new(), &today);
+            let b = layout(&doc, &mut LayoutCache::new(), &explicit);
+            assert_eq!(a.pages.len(), b.pages.len(), "{family} {view:?}: page count");
+            for (p, q) in a.pages.iter().zip(&b.pages) {
+                for (i, j) in p.items.iter().zip(&q.items) {
+                    assert_eq!(format!("{i:?}"), format!("{j:?}"), "{family} {view:?}: an item differs");
+                }
+            }
+        }
+    }
+}

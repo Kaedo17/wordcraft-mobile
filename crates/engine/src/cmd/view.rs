@@ -40,6 +40,17 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("view.readPageColor", "Reading Page Color", "Reading › Layout", read_page_color)
             .params(r#"{"value": "none" | "sepia" | "inverse"}"#)
             .pure(),
+        // Pocket Mode: Web Layout reflowed to a phone's column, for the phone app's Mobile View.
+        // Turning it on enters Web Layout; turning it off returns to Print Layout, as the fork's
+        // `set_view` did.
+        CommandSpec::new("view.pocketMode", "Pocket Mode", "View › Views", pocket_mode)
+            .params(r#"{"value"?: bool; without it, toggles}"#)
+            .pure(),
+        // The width Pocket Mode reflows to, in points (`crates/layout`'s mobile column). Kept
+        // between runs with the view state; the fork clamped it to 72–4000 with a 360 default.
+        CommandSpec::new("view.pocketWidth", "Pocket Width", "View › Views", pocket_width)
+            .params(r#"{"value": points (72–4000, default 360); anything else reads as 360}"#)
+            .pure(),
         // Print Layout: hide the white space (margins, headers, footers) between pages. Screen only.
         CommandSpec::new("view.hideWhiteSpace", "Hide White Space", "View › Show", |s, v| toggle(s, v, |x| &mut x.hide_white_space))
             .params(r#"{"value"?: bool}"#)
@@ -187,6 +198,52 @@ fn mode(s: &mut Session, m: ViewMode, read: bool) -> CmdResult {
     s.view.read_mode = read;
     s.relayout();
     Ok(json!({"mode": m, "readMode": read}))
+}
+
+/// Pocket Mode's text width in points: a phone in portrait, as the fork measured it.
+pub const DEFAULT_POCKET_WIDTH: f32 = 360.0;
+
+/// The range a pocket width is kept in, like the fork's `set_view` (`72..=4000`).
+pub(crate) const POCKET_WIDTH_RANGE: std::ops::RangeInclusive<f32> = 72.0..=4000.0;
+
+/// A pocket width from anywhere (a command parameter or a saved value) as state that can be laid
+/// out: not a number, or not finite, reads as the default; a finite one is clamped to
+/// [`POCKET_WIDTH_RANGE`]. So `NaN` and infinities can never reach the layout.
+pub fn pocket_width_or_default(v: &Value) -> f32 {
+    v.as_f64()
+        .map(|x| x as f32)
+        .filter(|x| x.is_finite())
+        .map_or(DEFAULT_POCKET_WIDTH, |x| x.clamp(*POCKET_WIDTH_RANGE.start(), *POCKET_WIDTH_RANGE.end()))
+}
+
+/// View › Views › Pocket Mode. Without a value it toggles, as the other view switches do.
+/// On: the pocket column, in Web Layout. Off: Print Layout and the pocket column dropped.
+/// The width itself is `view.pocketWidth` and survives the round trip.
+fn pocket_mode(s: &mut Session, v: &Value) -> CmdResult {
+    let r = toggle(s, v, |x| &mut x.mobile);
+    let mobile = s.view.mobile;
+    // `mode` lays the view out again; the flag above is part of what it lays out for.
+    let mut out = mode(s, if mobile { ViewMode::Web } else { ViewMode::Print }, false)?;
+    s.relayout();
+    if let Some(o) = out.as_object_mut() {
+        o.insert("mobile".into(), json!(mobile));
+        o.insert("pocketWidth".into(), json!(s.view.pocket_width));
+    }
+    r?;
+    Ok(out)
+}
+
+/// View › Views › Pocket Width: the text width Pocket Mode reflows to, in points. A value that
+/// isn't a finite number is the default (360), and a finite one is clamped to 72–4000, so no
+/// `NaN` or infinity ever reaches the layout.
+fn pocket_width(s: &mut Session, v: &Value) -> CmdResult {
+    let width = pocket_width_or_default(v.get("value").unwrap_or(&Value::Null));
+    let changed = s.view.pocket_width != width;
+    s.view.pocket_width = width;
+    if changed {
+        s.relayout();
+    }
+    Ok(json!({"pocketWidth": width}))
 }
 
 fn styles_pane_dock(s: &mut Session, v: &Value) -> CmdResult {

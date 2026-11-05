@@ -216,6 +216,7 @@ pub fn measure_table_columns(doc: &wordcraft_doc::Document, t: &Table) -> Vec<(f
                 read_line_spacing: None,
                 grid: crate::para::Grid::default(),
                 fit_objects: false,
+                mobile: None,
                 fitted: &[],
             };
             let (mut min, mut max) = (EMPTY_TEXT, EMPTY_TEXT);
@@ -404,7 +405,9 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         total = tw;
     }
     // A table with its own width keeps it, however far it runs past the margins (as in Word).
-    if target.is_none() && total > avail * 1.5 && !t.props.fixed {
+    // Mobile View narrows a table wider than the screen to fit it (measured against the
+    // reference); elsewhere only a table far wider than its room is.
+    if (target.is_none() && total > avail * 1.5 && !t.props.fixed) || (ctx.mobile() && total > avail) {
         let k = avail / total.max(1.0);
         grid.iter_mut().for_each(|w| *w *= k);
         total = avail;

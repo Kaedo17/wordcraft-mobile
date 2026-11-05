@@ -1081,7 +1081,11 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             reflow_anchor = app.canvas.read_first_visible.clone();
         }
     } else {
-        if app.session.view.mode == wordcraft_layout::ViewMode::Web {
+        // Pocket Mode reflows Web Layout to a fixed phone column (#1876 is the ordinary Web Layout:
+        // it wraps to the work area). The engine lays the pocket column out and ignores
+        // `web_width`, so writing the window's width here would only churn a field nothing reads —
+        // and would leave a window width behind for the moment pocket mode is switched off.
+        if app.session.view.mode == wordcraft_layout::ViewMode::Web && !app.session.view.mobile {
             // Web Layout wraps to the work area (#1876): at once on entry or a zoom (the viewport
             // holds still), after a window drag has settled, and only on a real change.
             let scale = app.session.view.zoom.clamp(0.1, 5.0) * PX_PER_PT;

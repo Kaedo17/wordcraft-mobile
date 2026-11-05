@@ -8,3 +8,15 @@ plan/
 /.claude/
 /target-*/
 /craft-fonts/
+
+# Private CARGO_HOME a build needs when ~/.cargo is read-only (seeded from the shared git db).
+/.cargo-home/
+
+# Scratch: the upstream fork clone and worktree the port was read from.
+/.scratch/
+
+# Gradle build outputs and a workspace-local Gradle home.
+.gradle/
+build/
+/.scratch/
+/.gradle-home/

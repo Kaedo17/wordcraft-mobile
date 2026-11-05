@@ -47,6 +47,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("pdf", Class::Layer(3)),
     ("engine", Class::Layer(4)),
     ("mcp", Class::Layer(5)),
+    // The UniFFI bridge the Compose phone app loads: engine-level, like the MCP server.
+    ("android-bridge", Class::Layer(5)),
     ("zotero", Class::Layer(5)),
     ("ui-egui", Class::Layer(6)),
     ("testkit", Class::Testkit),
@@ -56,6 +58,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("web", Class::Exempt),
     ("android", Class::Exempt),
     ("xtask", Class::Exempt),
+    // The UniFFI binding generator the Android build runs: build tooling, like xtask.
+    ("android-bindgen", Class::Exempt),
 ];
 
 /// Explicit orderings *within* a layer (earlier may be used by later).

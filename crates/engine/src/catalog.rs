@@ -320,6 +320,8 @@ Review|Ink|Hide Ink|review.hideInk
 View|Views|Read Mode|view.readMode
 View|Views|Print Layout|view.printLayout
 View|Views|Web Layout|view.webLayout
+View|Views|Pocket Mode|view.pocketMode
+View|Views|Pocket Width|view.pocketWidth
 View|Views|Outline|view.outline
 View|Views|Draft|view.draft
 View|Immersive|Focus|view.focus

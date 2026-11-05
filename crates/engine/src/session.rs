@@ -175,6 +175,16 @@ pub struct ViewState {
     /// Draft and Outline don't use it: they keep a fixed 800 pt column.
     #[serde(skip, default = "default_web_width")]
     pub web_width: f32,
+    /// Pocket Mode (`view.pocketMode`): Web Layout reflowed to a phone's column, for the phone
+    /// app's Mobile View. Kept between runs, with the width below.
+    #[serde(default)]
+    pub mobile: bool,
+    /// The text width Pocket Mode reflows to, in points (`view.pocketWidth`). Saved with the view
+    /// state: a junk or out-of-range saved value reads as the default (see
+    /// [`lenient_pocket_width`]). Not the same thing as `web_width`, which the UI overwrites with
+    /// the window's width whenever Web Layout draws (#1876); Pocket Mode's column is fixed.
+    #[serde(default = "default_pocket_width", deserialize_with = "lenient_pocket_width", rename = "pocketWidth")]
+    pub pocket_width: f32,
     /// Transient viewport metrics for reading pagination; never saved in a document or preferences.
     #[serde(skip, default = "default_read_width")]
     pub read_width: f32,
@@ -268,6 +278,16 @@ fn default_web_width() -> f32 {
     DRAFT_WIDTH
 }
 
+fn default_pocket_width() -> f32 {
+    crate::cmd::view::DEFAULT_POCKET_WIDTH
+}
+
+/// A saved pocket width that isn't a finite number reads as the default, without losing the rest
+/// of the view state (the discipline of `interface_size_survives_a_restart_and_clamps_junk`).
+fn lenient_pocket_width<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(crate::cmd::view::pocket_width_or_default(&Value::deserialize(d)?))
+}
+
 fn default_read_width() -> f32 {
     300.0
 }
@@ -306,6 +326,8 @@ impl Default for ViewState {
             single_column: false,
             fit: String::new(),
             web_width: default_web_width(),
+            mobile: false,
+            pocket_width: default_pocket_width(),
             read_width: default_read_width(),
             read_height: default_read_height(),
             read_column_width: None,
@@ -423,7 +445,7 @@ type RunSnapshot = (Document, Selection, Vec<Arc<Undo>>, Vec<Arc<Undo>>, bool, u
 /// A layout made and what it was made for: (revision, width, read height, view, read line
 /// spacing, layout, proofing, outline, (deletions left out, deletions marked Hidden, body
 /// deletions in balloons), numeral display, the word being typed, (hidden text shown, field
-/// codes shown)).
+/// codes shown), pocket mode).
 type LayoutEntry = (
     u64,
     f32,
@@ -437,6 +459,7 @@ type LayoutEntry = (
     NumeralMode,
     Option<wordcraft_layout::TypingWord>,
     (bool, bool),
+    bool,
 );
 
 /// The layouts last made, newest first. Two, so two windows on one document with different
@@ -1142,8 +1165,12 @@ impl Session {
     /// [`Session::layout`] with `typing` as the word being typed.
     fn layout_with(&mut self, typing: Option<wordcraft_layout::TypingWord>) -> Arc<DocLayout> {
         let mode = if self.view.read_mode { ViewMode::Read } else { self.view.mode };
+        // Pocket Mode fixes Web Layout's column at the phone width; the UI's window width (#1876)
+        // never applies to it.
+        let mobile = self.view.mobile;
         let width = match mode {
             ViewMode::Read => self.view.read_width,
+            ViewMode::Web if mobile => self.view.pocket_width,
             ViewMode::Web => self.view.web_width,
             _ => DRAFT_WIDTH,
         };
@@ -1157,7 +1184,7 @@ impl Session {
         let shown = (self.view.marks || self.prefs.marks.hidden, self.view.field_codes);
         let (rev, proofing, numeral) = (self.rev, self.view.proofing, self.view.numeral);
         let fits = |e: &Option<LayoutEntry>| {
-            e.as_ref().is_some_and(|(r, w, h, m, sp, _, pf, o, hd, n, t, sh)| {
+            e.as_ref().is_some_and(|(r, w, h, m, sp, _, pf, o, hd, n, t, sh, mb)| {
                 *r == rev
                     && (*w == width || mode == ViewMode::Print)
                     && *h == height
@@ -1169,6 +1196,7 @@ impl Session {
                     && *o == outline
                     && *t == typing
                     && *sh == shown
+                    && *mb == mobile
             })
         };
         if !fits(&self.layout[0]) && fits(&self.layout[1]) {
@@ -1184,6 +1212,9 @@ impl Session {
         let opts = LayoutOptions {
             view: mode,
             web_width: width,
+            // Pocket Mode's Mobile View (crates/layout, task-1): inert unless set, and only in
+            // Web Layout. `mobile` here is the view state's, above.
+            mobile,
             read_height: height,
             read_line_spacing: spacing.map(f32::from_bits),
             show_hidden: shown.0,
@@ -1203,7 +1234,7 @@ impl Session {
         let l = Arc::new(wordcraft_layout::layout(&self.doc, &mut self.cache, &opts));
         let [newest, _] = std::mem::take(&mut self.layout);
         self.layout = [
-            Some((self.rev, width, height, mode, spacing, l.clone(), self.view.proofing, outline, deleted, self.view.numeral, typing, shown)),
+            Some((self.rev, width, height, mode, spacing, l.clone(), self.view.proofing, outline, deleted, self.view.numeral, typing, shown, mobile)),
             newest,
         ];
         l

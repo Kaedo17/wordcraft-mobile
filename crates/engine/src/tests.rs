@@ -10536,6 +10536,147 @@ fn draft_keeps_its_column_after_web_layout() {
     assert_eq!(restored.web_width, 800.0);
 }
 
+/// Pocket Mode (`view.pocketMode`): off by default, toggling with no value, taking an explicit
+/// value, and carrying Web Layout in and Print Layout back out — the fork's `set_view`, as a
+/// command. It never edits the document.
+#[test]
+fn pocket_mode_toggles_web_layout_and_back() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "Pocket text. ".repeat(300)}));
+    let before = s.doc.clone();
+    assert!(!s.view.mobile, "off until asked for");
+    assert_eq!(s.view.mode, wordcraft_layout::ViewMode::Print);
+
+    // On: Web Layout at the pocket column.
+    let on = run(&mut s, "view.pocketMode", json!({}));
+    assert_eq!(on["mobile"], true);
+    assert_eq!(on["mode"], json!(wordcraft_layout::ViewMode::Web));
+    assert!(s.view.mobile && !s.view.read_mode);
+    assert_eq!(s.view.mode, wordcraft_layout::ViewMode::Web);
+    assert_eq!(s.layout().pages[0].w, s.view.pocket_width, "laid out at the pocket width");
+
+    // Off again: Print Layout, and the document untouched.
+    let off = run(&mut s, "view.pocketMode", json!({}));
+    assert_eq!(off["mobile"], false);
+    assert_eq!(off["mode"], json!(wordcraft_layout::ViewMode::Print));
+    assert!(!s.view.mobile);
+    assert_eq!(s.view.mode, wordcraft_layout::ViewMode::Print);
+    assert_eq!(s.doc.body.len(), before.body.len(), "a view switch never edits the document");
+
+    // An explicit value is honoured, and setting the state it is already in is harmless.
+    assert_eq!(run(&mut s, "view.pocketMode", json!({"value": true}))["mobile"], true);
+    assert!(s.view.mobile);
+    assert_eq!(run(&mut s, "view.pocketMode", json!({"value": true}))["mobile"], true, "already on");
+    assert_eq!(run(&mut s, "view.pocketMode", json!({"value": false}))["mobile"], false);
+    assert!(!s.view.mobile);
+    assert_eq!(run(&mut s, "view.pocketMode", json!({"value": false}))["mobile"], false, "already off");
+
+    let reg = cmd::registry();
+    let spec = reg.get("view.pocketMode").expect("registered");
+    assert_eq!((spec.label, spec.location), ("Pocket Mode", "View › Views"));
+    assert!(spec.params.contains("value"), "documents its parameter: {}", spec.params);
+}
+
+/// `view.pocketWidth`: the points Pocket Mode reflows to, clamped to 72–4000 with a 360 default.
+/// A junk, missing or non-finite value falls back to the default, so `NaN` and infinities never
+/// reach the layout or the saved state.
+#[test]
+fn pocket_width_clamps_and_never_stores_a_non_finite_width() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "Pocket text. ".repeat(300)}));
+    assert_eq!(s.view.pocket_width, 360.0, "a phone in portrait");
+    assert_eq!(run(&mut s, "view.pocketWidth", json!({"value": 300}))["pocketWidth"], 300.0);
+    assert_eq!(s.view.pocket_width, 300.0);
+
+    // Out of range is clamped, not rejected.
+    assert_eq!(run(&mut s, "view.pocketWidth", json!({"value": 10}))["pocketWidth"], 72.0);
+    assert_eq!(run(&mut s, "view.pocketWidth", json!({"value": 99_999}))["pocketWidth"], 4000.0);
+    assert_eq!(s.view.pocket_width, 4000.0);
+
+    // Junk and non-finite values read as the default, never as NaN or infinity.
+    for junk in [json!(null), json!("wide"), json!([1]), json!({}), json!(true)] {
+        assert_eq!(run(&mut s, "view.pocketWidth", json!({"value": junk.clone()}))["pocketWidth"], 360.0, "{junk}");
+        assert_eq!(s.view.pocket_width, 360.0, "{junk}");
+    }
+    for bad in ["NaN", "-inf", "inf"] {
+        let v: f64 = bad.parse().unwrap_or_else(|_| panic!("{bad} parses"));
+        run(&mut s, "view.pocketWidth", json!({"value": v}));
+        assert_eq!(s.view.pocket_width, 360.0, "{bad}");
+        assert!(s.view.pocket_width.is_finite(), "{bad}");
+    }
+    assert_eq!(run(&mut s, "view.pocketWidth", json!({}))["pocketWidth"], 360.0, "no value is the default");
+    assert!(s.view.pocket_width.is_finite());
+
+    // The width is what Pocket Mode lays out at, and a change re-lays it out (Web Layout is one
+    // long page, so the wrapped line count is what shows the reflow).
+    let lines = |s: &mut Session| -> usize {
+        s.layout().pages[0]
+            .items
+            .iter()
+            .map(|i| if let wordcraft_layout::Placed::Lines { l0, l1, .. } = i { l1 - l0 } else { 0 })
+            .sum()
+    };
+    run(&mut s, "view.pocketMode", json!({"value": true}));
+    run(&mut s, "view.pocketWidth", json!({"value": 240}));
+    assert_eq!(s.layout().pages[0].w, 240.0);
+    let narrow = lines(&mut s);
+    run(&mut s, "view.pocketWidth", json!({"value": 1200}));
+    assert_eq!(s.layout().pages[0].w, 1200.0);
+    assert!(lines(&mut s) < narrow, "a wider column wraps fewer lines: {narrow} -> {}", lines(&mut s));
+    // Pocket Mode ignores the window's Web Layout width (#1876): the pocket width wins.
+    s.view.web_width = 1400.0;
+    assert_eq!(s.layout().pages[0].w, 1200.0, "the window width never resizes the pocket column");
+
+    let reg = cmd::registry();
+    let spec = reg.get("view.pocketWidth").expect("registered");
+    assert_eq!((spec.label, spec.location), ("Pocket Width", "View › Views"));
+    assert!(spec.params.contains("value"), "documents its parameter: {}", spec.params);
+}
+
+/// Pocket state survives a save/restore of the view state — including junk saved values, which
+/// read as the default without losing the rest of the state (the discipline of
+/// `interface_size_survives_a_restart_and_clamps_junk`).
+#[test]
+fn pocket_state_survives_a_restart_and_clamps_junk() {
+    let mut s = s();
+    run(&mut s, "view.pocketMode", json!({"value": true}));
+    run(&mut s, "view.pocketWidth", json!({"value": 288}));
+    let saved = serde_json::to_value(&s.view).unwrap();
+    assert_eq!(saved["mobile"], json!(true), "the mode is kept: {saved}");
+    assert_eq!(saved["pocketWidth"], json!(288.0), "so is the width: {saved}");
+    let restored: crate::ViewState = serde_json::from_value(saved.clone()).unwrap();
+    assert!(restored.mobile);
+    assert_eq!(restored.pocket_width, 288.0);
+
+    // A saved value that isn't a finite number reads as the default, and keeps the rest of the
+    // state (`saved` is a whole view state, as a restart would read one back).
+    let with = |raw: &str, val: serde_json::Value| -> crate::ViewState {
+        let mut j = saved.clone();
+        j["pocketWidth"] = val;
+        j["darkMode"] = json!(true);
+        j["zoom"] = json!(1.75);
+        serde_json::from_value(j).unwrap_or_else(|e| panic!("{raw}: {e}"))
+    };
+    for raw in [r#""wide""#, "null", "[1]", "{}", "true", r#"{"n": 1}"#] {
+        let v = with(raw, serde_json::from_str(raw).unwrap_or(serde_json::Value::Null));
+        assert_eq!(v.pocket_width, 360.0, "{raw}");
+        assert!(v.mobile && v.dark_mode && v.zoom == 1.75, "the rest of the state survives {raw}");
+    }
+    for (raw, want) in [("1000", 1000.0), ("10", 72.0), ("-5", 72.0), ("4000", 4000.0), ("124.6", 124.6)] {
+        let v = with(raw, serde_json::from_str(raw).unwrap_or(serde_json::Value::Null));
+        assert_eq!(v.pocket_width, want, "{raw}");
+        assert!(v.mobile && v.zoom == 1.75, "the rest of the state survives {raw}");
+    }
+    // A view state saved before Pocket Mode reads as off at the default width.
+    let mut before = saved.clone();
+    before.as_object_mut().unwrap().remove("mobile");
+    before.as_object_mut().unwrap().remove("pocketWidth");
+    let old: crate::ViewState = serde_json::from_value(before).unwrap();
+    assert!(!old.mobile && old.pocket_width == 360.0, "a state from before Pocket Mode opens off");
+    // The pocket width is a view setting, not the window's, which #1876 keeps out of the state.
+    assert!(saved.get("webWidth").is_none(), "a window width is not view state to keep: {saved}");
+}
+
 /// Insert › Quick Parts and AutoText list, insert and save the document's own building blocks
 /// (its glossary, kept in the file); saving with `"in": "document"` is undoable.
 #[test]

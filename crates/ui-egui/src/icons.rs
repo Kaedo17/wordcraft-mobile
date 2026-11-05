@@ -1493,6 +1493,13 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.line_c(&[(4.0, 12.0), (8.0, 16.0)], a);
             pen.line(&[(7.0, 13.0), (7.0, 12.0)]);
         }
+        "pocketMode" => {
+            // A page beside a phone: the narrow column Pocket Mode reflows the text to.
+            pen.rect(3.0, 3.0, 11.5, 17.0, c);
+            pen.lines(5.0, 9.5, &[6.5, 9.0, 11.5]);
+            pen.rect(13.5, 6.0, 18.5, 17.0, a);
+            pen.line_c(&[(15.5, 15.0), (16.5, 15.0)], a);
+        }
         _ => {
             // Fallback: a rounded tile with the first letter.
             p.rect_stroke(r.shrink(r.width() * 0.12), 3.0, Stroke::new(1.0, c), egui::StrokeKind::Middle);
