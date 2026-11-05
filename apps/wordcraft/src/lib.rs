@@ -349,13 +349,11 @@ fn services(file_dialog: FileDialog, ctx: &egui::Context, access: Option<&Shared
         // mode is the pocket presentation alone).
         pocket_handoff: access.and_then(|a| a.switch_front_end.clone()).map(|f| {
             let f = f.clone();
-            Box::new(move |pocket: bool| {
-                if f(pocket) {
-                    Ok(())
-                } else {
-                    Err("Pocket Mode could not switch to the phone app on this device.".to_string())
-                }
-            }) as Box<dyn Fn(bool) -> Result<(), String>>
+            Box::new(
+                move |pocket: bool| {
+                    if f(pocket) { Ok(()) } else { Err("Pocket Mode could not switch to the phone app on this device.".to_string()) }
+                },
+            ) as Box<dyn Fn(bool) -> Result<(), String>>
         }),
         #[cfg(not(target_os = "android"))]
         printers: Some(print::discover()),

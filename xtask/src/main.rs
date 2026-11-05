@@ -129,7 +129,12 @@ fn cmd_layers() -> Result<(), String> {
 }
 
 /// Workspace packages that must build for wasm32: all L0–L5 crates plus
-/// the egui shell.
+/// the egui shell, except the ones that are FFI by nature.
+///
+/// `android-bridge` is L5 but reaches the phone front end through UniFFI, whose whole job is a
+/// foreign-function boundary: it has no wasm story and never builds for that target. Listing it
+/// here would make this gate fail on every run, which is the one thing a gate must not do — so it
+/// is named as the exception rather than left to be rediscovered.
 fn wasm_set() -> Result<Vec<String>, String> {
     let crates = layers::from_metadata(&metadata()?)?;
     Ok(crates
@@ -139,6 +144,7 @@ fn wasm_set() -> Result<Vec<String>, String> {
             Some(layers::Class::Standalone) => true,
             _ => false,
         })
+        .filter(|c| !matches!(layers::short_name(&c.name), "android-bridge"))
         .map(|c| c.name)
         .collect())
 }

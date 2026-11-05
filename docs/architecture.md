@@ -1,6 +1,6 @@
 # WordCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (Android: input — the vendored winit's mouse path, the stamped keyboard modifiers and the canvas's touch arbiter (a finger pans the page, a still hold is the long-press menu, a tap places the caret); previously minor: Android: the entry crate's JNI offers shared storage as the browser's second root; previously minor: host-provided storage serves every file command in the built-in browser) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (Pocket Mode: the mobile layout mode, `view.pocketMode`/`view.pocketWidth`, the Views-tab switch, `crates/android-bridge` and the Compose phone front end, and the hand-off between the two) · **Previously:** 2026-10-26 · **Change:** minor (Android: input — the vendored winit's mouse path, the stamped keyboard modifiers and the canvas's touch arbiter (a finger pans the page, a still hold is the long-press menu, a tap places the caret); previously minor: Android: the entry crate's JNI offers shared storage as the browser's second root; previously minor: host-provided storage serves every file command in the built-in browser) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 How WordCraft is built today (origin/main `40c5d51`). The longer design notes in
 `plan/architecture.md` are gitignored and local to the original author's machine; this file is the
@@ -32,7 +32,9 @@ winit or rfd.
 | apps | `wordcraft` | 1.6k | Desktop app (library + binary; eframe + wgpu; logging, window geometry, file associations) |
 | apps | `wordcraft-cli` | 0.4k | `convert`, `text`, `inspect`, `run`, `commands`, `parity`, `mcp`, `zotero` |
 | apps | `wordcraft-web` | 0.3k | Browser build (eframe web runner, WebGPU with WebGL2 fallback) |
+| L5 | `android-bridge` | 2.0k | The UniFFI bridge the Compose phone app loads: the engine behind 53 phone-shaped methods, every one a command run by id |
 | apps | `wordcraft-android` | 0.03k | Android build (NativeActivity entry, `cargo apk`): opens the shared app library; settings resolve to the app-private storage |
+| apps | `wordcraft-android-compose` | — | The phone front end: a Kotlin/Jetpack Compose UI over `android-bridge` (not a Rust crate; its binding generator is) |
 
 `apps/wordcraft-android` is a `cdylib` trampoline: Android's `NativeActivity` loads it and calls its
 unmangled `android_main`, which opens the shared app library (`wordcraft::run_android`, the same code
@@ -45,6 +47,35 @@ it — the shared library receives the plain closures (`wordcraft::SharedStorage
 none itself. The crate's manifest (`package.metadata.android`) carries the APK identity, the SDK
 levels, the activity's `configChanges` and the shared-storage permissions; the app-private
 storage it resolves hands the shared library its settings folder.
+
+## Pocket Mode and the two phone front ends
+
+Pocket Mode is the phone/tablet presentation: the document reflowed to a pocket's column instead of
+laid out as pages. It is one view state, `view.pocketMode` (View › Views), with the column's width in
+`view.pocketWidth`; [`crates/layout`](../crates/layout/src/lib.rs)'s `LayoutOptions::mobile` does the
+reflow, and it is inert unless the flag is set. Its own doc is
+[pocket-mode.md](pocket-mode.md).
+
+WordCraft ships **two front ends for phones**, and Pocket Mode is also the switch between them:
+
+| Front end | UI toolkit | Library | Role |
+|---|---|---|---|
+| This repository's egui app | egui/eframe over winit | `libwordcraft_android.so` (the `wordcraft-android` `cdylib`) | the launcher; the same UI as the desktop |
+| `apps/wordcraft-android-compose` | Kotlin/Jetpack Compose | `libwordcraft_android_bridge.so` (`crates/android-bridge`) | the pocket UI |
+
+Both are the *same engine*: the Compose app edits through `android-bridge`, whose every method is a
+command run by id, so undo, the never-crash guard and AutoCorrect behave as they do on the desktop.
+The bridge reaches into the engine's state only where a command has no equivalent (principally
+`set_view`, which drives `view.pocketWidth`/`view.pocketMode`).
+
+They cannot share a window — one is a `NativeActivity` whose `android_main` hands the window to
+eframe/winit, the other a `ComponentActivity` with `setContent`, and each owns its window and its
+loop — so the switch is a **hand-off**, not a live re-layout: the running front end makes the
+document safe (saving it, or writing the recovery copy when it has never been saved), starts the
+other activity with an explicit intent, and that one re-opens the document. A failed save cancels
+the switch rather than risking an edit. `cargo-apk`, which the egui side alone would use, supports a
+single `<activity>`, so the **Gradle** project packages both activities and both Rust libraries in
+one APK.
 
 ## Data flow
 

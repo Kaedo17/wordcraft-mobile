@@ -199,9 +199,15 @@ covers every target starting with it (`wordcraft*=debug`). The logger is
 | L2 | `wordcraft-layout`, `wordcraft-docx`, `wordcraft-formats` | line breaking, pagination, tables, notes, hit testing; OOXML; ODT/RTF/HTML/Markdown/TXT |
 | L3 | `wordcraft-render`, `wordcraft-pdf` | rasteriser (vello_cpu); PDF ([craft-pdf](docs/shared-pdf.md), Krilla) |
 | L4 | `wordcraft-engine` | session, undo, 422 commands, document feature catalog |
-| L5 | `wordcraft-mcp` | MCP server |
+| L5 | `wordcraft-mcp`, `wordcraft-android-bridge` | MCP server; the UniFFI bridge the phone front end loads |
 | L6 | `wordcraft-ui-egui` | the word processor front end (swappable) |
 | apps | `wordcraft`, `wordcraft-cli`, `wordcraft-web` | desktop, command line, browser |
+| apps | `wordcraft-android`, `wordcraft-android-compose` | Android: the egui front end's `NativeActivity` entry, and the Kotlin/Jetpack Compose pocket front end |
+
+**Pocket Mode** (View › Views) reflows the document to a phone's column instead of laying out pages.
+On Android it is also the switch between the two front ends above: each owns its window, so they hand
+the document to one another rather than re-laying out in place
+([docs/pocket-mode.md](docs/pocket-mode.md)).
 
 `cargo xtask ci` runs formatting, clippy, ~800 tests, the asset-attribution check, the layering
 check and the wasm build. Contributor and agent instructions: [AGENTS.md](AGENTS.md).
