@@ -305,9 +305,12 @@ impl<T: 'static> EventLoop<T> {
                     warn!("TODO: forward onStop notification to application");
                 },
                 MainEvent::Destroy => {
-                    // XXX: maybe exit mainloop to drop things before being
-                    // killed by the OS?
-                    warn!("TODO: forward onDestroy notification to application");
+                    // Android will never run this activity again, so end the event loop.
+                    // `android_main` must return before the JVM unloads the library —
+                    // `NativeActivity.onDestroy` blocks on the unload — and when another
+                    // activity of the same app is still alive (WordCraft's Compose front end),
+                    // blocking here freezes the process's main thread into an ANR.
+                    self.window_target.exit();
                 },
                 MainEvent::InsetsChanged { .. } => {
                     // XXX: how to forward this state to applications?
