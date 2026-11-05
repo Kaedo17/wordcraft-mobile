@@ -23,15 +23,12 @@
 use jni::objects::{JObject, JValue};
 use jni::{JNIEnv, JavaVM};
 
-/// The app's package, as the manifest declares it (the settings intent's URI names it, and the
-/// hand-off resolves the other front end's activity inside it).
-const PACKAGE: &str = "ai.storyteller.wordcraft";
-
-/// This front end's activity: the egui app's `NativeActivity` (the launcher).
-const EGUI_ACTIVITY: &str = "ai.storyteller.wordcraft.NativeActivity";
-/// The pocket front end's activity: the Compose app's `MainActivity`. It carries
-/// `android:exported="false"` and no launcher filter, so only this explicit intent reaches it.
+/// The pocket front end's activity class, as the Gradle manifest declares it. The debug build's
+/// `applicationIdSuffix` changes the package, never the class name, so the hand-off resolves it
+/// inside whatever package the running app has.
 const COMPOSE_ACTIVITY: &str = "io.github.artcraftandroid.wordcraft.MainActivity";
+/// This front end's activity, as the manifest declares it (`android:name="android.app.NativeActivity"`).
+const EGUI_ACTIVITY: &str = "android.app.NativeActivity";
 
 /// The activity's JVM and activity reference, captured before the `AndroidApp` moves into
 /// eframe. The activity owns both and lives as long as the app, so every later call is valid.
@@ -96,6 +93,15 @@ impl AndroidAccess {
         Ok(true)
     }
 
+    /// The running app's package (`Context.getPackageName()`): the release app's package, or the
+    /// debug build's with its `applicationIdSuffix`. The grant URI and the hand-off intent must
+    /// name *this* package, so it is read from the activity rather than assumed.
+    fn runtime_package(env: &mut JNIEnv, act: &JObject) -> jni::errors::Result<String> {
+        let value = env.call_method(act, "getPackageName", "()Ljava/lang/String;", &[])?;
+        let text: jni::objects::JString = value.l()?.into();
+        Ok(env.get_string(&text)?.into())
+    }
+
     /// The API level (`Build.VERSION.SDK_INT`), `None` when the JVM could not answer.
     fn sdk(self) -> Option<i32> {
         self.with_env(|env| env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i())
@@ -135,8 +141,9 @@ impl AndroidAccess {
     pub fn ask_shared_storage_grant(self) {
         let asked = match self.sdk() {
             Some(sdk) if sdk >= 30 => self.with_env(|env| -> jni::errors::Result<bool> {
-                // uri = Uri.parse("package:<pkg>")
-                let uri_text = format!("package:{PACKAGE}");
+                // uri = Uri.parse("package:<the running app's package>")
+                let act = self.activity();
+                let uri_text = format!("package:{}", Self::runtime_package(env, &act)?);
                 let pkg = env.new_string(uri_text.as_str())?;
                 let uri =
                     env.call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&pkg)])?.l()?;
@@ -148,7 +155,6 @@ impl AndroidAccess {
                     &[JValue::Object(&action), JValue::Object(&uri)],
                 )?;
                 // activity.startActivity(intent)
-                let act = self.activity();
                 env.call_method(&act, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
                 Self::started(env)
             }),
@@ -188,9 +194,11 @@ impl AndroidAccess {
         let target = if pocket { COMPOSE_ACTIVITY } else { EGUI_ACTIVITY };
         let started = self.with_env(|env| -> jni::errors::Result<bool> {
             let act = self.activity();
-            // intent = new Intent(); intent.setClassName(package, target)
+            // intent = new Intent(); intent.setClassName(package, target) — the package is the
+            // running app's own, so the debug build's `applicationIdSuffix` resolves correctly.
             let intent = env.new_object("android/content/Intent", "()V", &[])?;
-            let pkg = env.new_string(PACKAGE)?;
+            let pkg_text = Self::runtime_package(env, &act)?;
+            let pkg = env.new_string(pkg_text.as_str())?;
             let cls = env.new_string(target)?;
             env.call_method(
                 &intent,
