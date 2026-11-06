@@ -173,6 +173,10 @@ so this is the same limitation seen from the other side.
 - `crates/android-bridge/src/tests.rs`: `mobile_view_reflows_to_the_width_and_print_brings_the_pages_back`
   and the rest of the ported suite (52 tests).
 - `.github/workflows/android.yml`: the packaged manifest pins `NativeActivity` to landscape (Desktop
-  Mode) and leaves `MainActivity` on the sensor (Pocket Mode turns with the device).
+  Mode) and leaves `MainActivity` on the sensor (Pocket Mode turns with the device), read by **activity
+  block** — `aapt2 dump xmltree` writes enum attributes as numbers, so landscape is `0`, portrait `1`
+  and an undeclared orientation is no line at all; grepping the dump for the word "landscape" fails on
+  a correctly pinned APK (run 42176542755 did exactly that), and the number is read from a fixture the
+  workflow builds with the runner's own framework table rather than hardcoded.
 - `apps/wordcraft-android/src/lib.rs`: `pocket_handoff_loads_the_class_with_the_apps_own_loader` pins the
   hand-off's class lookup, since JNI itself only runs on a device.

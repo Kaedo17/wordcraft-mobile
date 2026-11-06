@@ -130,18 +130,105 @@ jobs:
             grep -q "$act" /tmp/manifest.txt || { echo "missing activity $act"; exit 1; }
             echo "ok: $act"
           done
-          # Desktop Mode is landscape only, and Pocket Mode still turns with the device: `awk` reads
-          # each activity's own attributes (the first screenOrientation after its name line), so the
-          # check is against the shipped manifest rather than the source file.
+          # Desktop Mode is landscape only, and Pocket Mode still turns with the device, checked by activity
+          # block rather than by grepping the dump: `aapt2 dump xmltree` prints enum attributes as NUMBERS and
+          # never the words - screenOrientation(0x0101001e)=0 is landscape, =1 portrait, =-1 unspecified, and
+          # the attribute is omitted when the manifest declares nothing. Grepping for the word "landscape"
+          # fails on a correctly pinned APK, which is what run 42176542755 did. The number landscape maps to
+          # is read from a fixture built here with the runner's own framework table, so nothing is hardcoded;
+          # the source manifest is checked separately for the spelling that produces it.
           echo "--- Desktop Mode is landscape, Pocket Mode still turns"
-          # aapt2 dumps attributes as `A: android:screenOrientation(0x…)="landscape" (Raw: "landscape")`,
-          # so the match is on the attribute name, not on a literal `name="value"` spelling.
-          awk '/android:name.*android\.app\.NativeActivity/{f=1} f && /android:screenOrientation/{print; f=0}' /tmp/manifest.txt > /tmp/native-orientation.txt
-          grep -q 'landscape' /tmp/native-orientation.txt || { echo "the desktop front end is not pinned to landscape"; exit 1; }
-          echo "ok: NativeActivity pinned to landscape"
-          awk '/android:name.*\.MainActivity/{f=1} f && /android:screenOrientation/{print; f=0}' /tmp/manifest.txt > /tmp/main-orientation.txt
-          test -s /tmp/main-orientation.txt && { echo "MainActivity pins an orientation; Pocket Mode must follow the sensor"; exit 1; }
-          echo "ok: MainActivity follows the sensor"
+          cat > /tmp/orientation-fixture.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.github.artcraftandroid.orientationfixture">
+              <application>
+                  <activity android:name=".LandscapeActivity" android:screenOrientation="landscape"/>
+              </application>
+          </manifest>
+          XML
+          framework="$(ls "$ANDROID_HOME"/platforms/*/android.jar | head -1)"
+          "$aapt2" link -o /tmp/orientation-fixture.apk -I "$framework" --manifest /tmp/orientation-fixture.xml >/dev/null
+          "$aapt2" dump xmltree --file AndroidManifest.xml /tmp/orientation-fixture.apk > /tmp/orientation-fixture.txt
+          python3 - <<'PY'
+          import re, sys
+          
+          def activity_blocks(dump):
+              """One element's own lines: until the next element at the same indent or shallower."""
+              rows = dump.splitlines()
+              blocks = []
+              for i, row in enumerate(rows):
+                  if not row.strip().startswith("E: activity"):
+                      continue
+                  indent = len(row) - len(row.lstrip())
+                  body = []
+                  j = i + 1
+                  while j < len(rows):
+                      nxt = rows[j]
+                      if nxt.strip().startswith("E:") and len(nxt) - len(nxt.lstrip()) <= indent:
+                          break
+                      body.append(nxt)
+                      j += 1
+                  blocks.append("\n".join(body))
+              return blocks
+          
+          def name_of(block):
+              m = re.search(r"android:name\(0x[0-9a-f]+\)=" + '"([^"]+)"', block)
+              return m.group(1) if m else None
+          
+          def orientation_of(block):
+              m = re.search(r"android:screenOrientation\(0x[0-9a-f]+\)=(-?\d+)", block)
+              return int(m.group(1)) if m else None
+          
+          landscape = None
+          for block in activity_blocks(open("/tmp/orientation-fixture.txt").read()):
+              if orientation_of(block) is not None:
+                  landscape = orientation_of(block)
+          if landscape is None:
+              sys.exit("aapt2 dumped no screenOrientation for a fixture that declares landscape")
+          print("  aapt2 dumps landscape as", landscape)
+          
+          packaged = {}
+          for block in activity_blocks(open("/tmp/manifest.txt").read()):
+              name = name_of(block)
+              if name:
+                  packaged[name] = orientation_of(block)
+          for name, orient in sorted(packaged.items()):
+              print("  packaged", name, "screenOrientation", orient)
+          def phone(values):
+              """The phone activity, however its name was spelled: ".MainActivity" resolves against the
+              source package, so the packaged dump shows io.github.artcraftandroid.wordcraft.MainActivity
+              even with the debug applicationIdSuffix. Matches by the last name segment."""
+              for name, value in values.items():
+                  if name == "MainActivity" or name.endswith(".MainActivity"):
+                      return name, value
+              return None, None
+          
+          desktop = packaged.get("android.app.NativeActivity")
+          if desktop != landscape:
+              sys.exit("the desktop front end is not pinned to landscape: " + repr(desktop))
+          phone_name, phone_orient = phone(packaged)
+          if phone_name is None:
+              sys.exit("no phone activity in the packaged manifest")
+          if phone_orient is not None:
+              sys.exit("the phone activity " + phone_name + " pins " + str(phone_orient) + "; Pocket Mode must follow the sensor")
+          
+          source = open("apps/wordcraft-android-compose/android/app/src/main/AndroidManifest.xml").read()
+          declared = {}
+          for element in re.findall(r"<activity\b[^>]*>", source, re.S):
+              name = re.search("android:name=\"([^\"]+)\"", element)
+              orient = re.search("android:screenOrientation=\"([^\"]+)\"", element)
+              declared[name.group(1) if name else "?"] = orient.group(1) if orient else None
+          for name, orient in sorted(declared.items()):
+              print("  source declares", name, "screenOrientation", orient)
+          if declared.get("android.app.NativeActivity") != "landscape":
+              sys.exit("the desktop front end does not declare landscape: " + repr(declared.get("android.app.NativeActivity")))
+          src_phone_name, src_phone_orient = phone(declared)
+          if src_phone_name is None:
+              sys.exit("no phone activity in the source manifest")
+          if src_phone_orient is not None:
+              sys.exit("the phone activity " + src_phone_name + " declares " + src_phone_orient + "; Pocket Mode must follow the sensor")
+          print("ok: Desktop Mode is pinned to landscape, the phone activity follows the sensor")
+          PY
           echo "--- launcher entry"
           grep -q 'android.intent.category.LAUNCHER' /tmp/manifest.txt || { echo "no launcher"; exit 1; }
 
