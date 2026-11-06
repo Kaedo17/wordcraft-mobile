@@ -184,8 +184,8 @@ not by the phone activity, because that activity may be finished while egui is o
 of its window, and Android's status bar drew over them and took the touches: a finger could never reach
 View › Views › Pocket Mode, which is the only way back once Desktop Mode is remembered. So the desktop
 activity is now a `NativeActivity` subclass, `DesktopActivity`, that hides the system bars and brings them
-back on a swipe from an edge (`WindowInsetsController`, API 30+; on API 29 the bars stay as Android draws
-them, which is the old behaviour).
+back on a swipe from an edge — through `androidx.core.view.WindowCompat`'s insets controller, the one the
+phone front end already uses, so it works on every Android this app supports.
 **Auto means 100 % on Android (`crates/ui-egui/src/theme.rs`).** Android reports the screen's density
 as the display scale — 3.0 on a 480 dpi phone — and Auto followed it, drawing the whole interface
 three times as large. On that build Auto is one screen pixel per point; desktop and web keep following
