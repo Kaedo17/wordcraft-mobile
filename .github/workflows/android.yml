@@ -214,10 +214,10 @@ jobs:
                       return name, value
               return None, None
 
-          desktop_name, desktop = desktop(packaged)
+          desktop_name, desktop_orient = desktop(packaged)
           if desktop_name is None:
               sys.exit("no desktop activity in the packaged manifest")
-          if desktop != landscape:
+          if desktop_orient != landscape:
               sys.exit("the desktop front end is not pinned to landscape: " + repr(desktop))
           phone_name, phone_orient = phone(packaged)
           if phone_name is None:
@@ -233,11 +233,11 @@ jobs:
               declared[name.group(1) if name else "?"] = orient.group(1) if orient else None
           for name, orient in sorted(declared.items()):
               print("  source declares", name, "screenOrientation", orient)
-          src_desktop_name, src_desktop = desktop(declared)
+          src_desktop_name, src_desktop_orient = desktop(declared)
           if src_desktop_name is None:
               sys.exit("no desktop activity in the source manifest")
-          if src_desktop != "landscape":
-              sys.exit("the desktop front end does not declare landscape: " + repr(src_desktop))
+          if src_desktop_orient != "landscape":
+              sys.exit("the desktop front end does not declare landscape: " + repr(src_desktop_orient))
           src_phone_name, src_phone_orient = phone(declared)
           if src_phone_name is None:
               sys.exit("no phone activity in the source manifest")
