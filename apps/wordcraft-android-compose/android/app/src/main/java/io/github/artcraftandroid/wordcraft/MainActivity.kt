@@ -134,9 +134,13 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             for (unit in vm.desktopRequests) {
                 // The egui front end lives in this APK (`android.app.NativeActivity`, not exported),
-                // so an explicit in-app intent is the only way to reach it; CLEAR_TOP keeps one of each.
+                // so an explicit in-app intent is the only way to reach it. REORDER_TO_FRONT brings
+                // the existing instance forward instead of destroying it: `android.app.NativeActivity`
+                // keeps one native state per process, so destroying it and launching it again would
+                // hand the next activity callbacks to a dropped state ("spurious JVM callback" — the
+                // front end never came back). Reordering resumes it, and the open document survives.
                 launchSafely {
-                    val desktop = Intent().setClassName(packageName, "android.app.NativeActivity").addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    val desktop = Intent().setClassName(packageName, "android.app.NativeActivity").addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
                     startActivity(desktop)
                 }
             }
@@ -148,7 +152,7 @@ class MainActivity : ComponentActivity() {
             for (pocket in FrontEndHandoff.requests) {
                 launchSafely {
                     val target = if (pocket) "io.github.artcraftandroid.wordcraft.MainActivity" else "android.app.NativeActivity"
-                    startActivity(Intent().setClassName(packageName, target).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
+                    startActivity(Intent().setClassName(packageName, target).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
                 }
             }
         }
