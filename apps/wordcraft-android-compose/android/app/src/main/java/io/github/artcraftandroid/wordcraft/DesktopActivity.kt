@@ -1,9 +1,9 @@
 package io.github.artcraftandroid.wordcraft
 
 import android.app.NativeActivity
-import android.os.Build
-import android.window.WindowInsets
-import android.window.WindowInsetsController
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 /**
  * The desktop front end's activity: egui's `NativeActivity`, plus one thing Android's own class
@@ -12,8 +12,9 @@ import android.window.WindowInsetsController
  * Views › Pocket Mode, which is the only way back to the phone interface once Desktop Mode is
  * remembered. The bars come back on a swipe from an edge, so Back is still there.
  *
- * The window itself is untouched otherwise: `android.app.lib_name` in the manifest still points at
- * `libwordcraft_android.so`, and winit drives the event loop as before.
+ * The window is untouched otherwise: `android.app.lib_name` in the manifest still points at
+ * `libwordcraft_android.so`, and winit drives the event loop as before. The compat controller covers
+ * every API this app supports, so nothing here depends on the device's Android version.
  */
 class DesktopActivity : NativeActivity() {
     override fun onResume() {
@@ -21,12 +22,10 @@ class DesktopActivity : NativeActivity() {
         hideSystemBars()
     }
 
-    /** Full-screen immersive: bars hidden, transient on an edge swipe. Below API 30 there is no
-     * insets controller, so the bars stay as Android draws them — nothing else changes. */
+    /** Full-screen immersive: bars hidden, transient on a swipe from an edge. */
     private fun hideSystemBars() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
-        val controller = window.insetsController ?: return
-        controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        runCatching { controller.hide(WindowInsets.Type.systemBars()) }
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        runCatching { controller.hide(WindowInsetsCompat.Type.systemBars()) }
     }
 }
