@@ -562,7 +562,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * the phone activity finishes once egui reports its window is up, so the back gesture leaves the
      * app instead of uncovering Pocket Mode. Pocket Mode (the desktop interface's View › Views) is
      * the way back. The request goes over the same channel the hand-off uses, because
-     * `NativeActivity` is not exported and nothing outside the APK can start it.
+     * `DesktopActivity` is not exported and nothing outside the APK can start it.
      */
     fun openDesktopInterface() {
         desktopInterfaceOn = true

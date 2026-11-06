@@ -136,14 +136,16 @@ class MainActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             for (unit in vm.desktopRequests) {
-                // The egui front end lives in this APK (`android.app.NativeActivity`, not exported),
-                // so an explicit in-app intent is the only way to reach it. REORDER_TO_FRONT brings
-                // the existing instance forward instead of destroying it: `android.app.NativeActivity`
+                // The egui front end lives in this APK (`DesktopActivity`, not exported), so an
+                // explicit in-app intent is the only way to reach it. REORDER_TO_FRONT brings the
+                // existing instance forward instead of destroying it: the NativeActivity underneath
                 // keeps one native state per process, so destroying it and launching it again would
                 // hand the next activity callbacks to a dropped state ("spurious JVM callback" — the
                 // front end never came back). Reordering resumes it, and the open document survives.
                 launchSafely {
-                    startActivity(Intent(this, DesktopActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+                    // `this` inside `lifecycleScope.launch` is the coroutine scope, so the activity
+                    // has to be named explicitly for the Intent's Context argument.
+                    startActivity(Intent(this@MainActivity, DesktopActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
                 }
             }
         }
@@ -156,7 +158,7 @@ class MainActivity : ComponentActivity() {
     /**
      * The interface the person chose is remembered: Settings › Display Preferences › Desktop Mode,
      * or egui's View › Views › Pocket Mode handing back. Opening WordCraft on the desktop interface
-     * needs an explicit in-app intent — `NativeActivity` is not exported — and this activity stays
+     * needs an explicit in-app intent — `DesktopActivity` is not exported — and this activity stays
      * alive until egui reports its window is up (`WordcraftApplication` finishes it), so a desktop
      * front end that cannot start leaves the phone interface on screen rather than an empty task.
      * A document another app hands over still opens here, on the phone interface.
@@ -164,7 +166,7 @@ class MainActivity : ComponentActivity() {
     private fun redirectDesktopLaunch(): Boolean {
         if (!vm.desktopInterfaceOn || intent?.data != null) return false
         launchSafely {
-            startActivity(Intent(this, DesktopActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+            startActivity(Intent(this@MainActivity, DesktopActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
         }
         return true
     }
