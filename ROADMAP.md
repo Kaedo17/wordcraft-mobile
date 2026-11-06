@@ -149,7 +149,12 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
   loop and window exist), so the back gesture leaves WordCraft instead of uncovering Pocket Mode "like
   another page"; a desktop front end that cannot recreate its loop never reports, so the phone interface
   stays rather than an empty task. Both hand-off channels drain in `WordcraftApplication`, since the phone
-  activity may be finished while egui is on screen. Pocket Mode (View › Views there) is the way back.
+  activity may be finished while egui is on screen. Pocket Mode is the way back from **either** side:
+  egui's View › Views › Pocket Mode hands over the hand-off, and Pocket Mode chosen in Settings drops the
+  remembered choice too, so the next launch opens whichever interface was last used. Verified end to end
+  on a Huawei phone at 1200x2000 and 320 dpi: Desktop Mode put `DesktopActivity` on screen with the bars
+  hidden and the interface drawn at 100 %; egui's Pocket Mode brought the phone activity back and cleared
+  `desktopInterface`; relaunching opened the phone interface.
   **Auto means 100 % on Android** (`crates/ui-egui/src/theme.rs`): Android reports the screen's density as
   the display scale — 3.0 on a 480 dpi phone — and following it drew the whole interface three times as
   large; there Auto is one pixel per point, desktop and web keep the system's scale, and a size chosen in

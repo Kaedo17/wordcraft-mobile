@@ -153,7 +153,7 @@ Small follow-ups from the 2026-10-25 field, table and AutoFormat batch (#4232):
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-06 | trivial | Gap 30 note: Desktop Mode is remembered across restarts (the phone activity retires when egui reports its window is up), and Auto means 100 % on Android instead of following the screen's density scale |
+| 2026-11-06 | trivial | Gap 30 note: Desktop Mode is remembered across restarts (the phone activity retires when egui reports its window is up), Pocket Mode clears the choice from either front end, and Auto means 100 % on Android instead of following the screen's density scale; the round trip was verified on a Huawei phone |
 | 2026-11-06 | trivial | Gap 30 note: the phone's pocket column overflows the screen at its default width (text cut at the right edge, a swipe needed; Print View fits), found on a POCO X6 Pro with the CI debug APK; the interface options' move and Desktop Mode's landscape pin verified on that phone |
 | 2026-11-05 | minor | Gap 31 added: Picture shadows are accepted but not rendered, and the chart/picture-style gallery previews have no public engine API (both found while porting the phone front end) |
 | 2026-10-26 | minor | Gap 30: the Android arm64 port (launch, edit, save and open, the browser's dialogs and shared storage, touch pan and the long-press menu, Tab S11-verified); release packaging and the manual grant remain |

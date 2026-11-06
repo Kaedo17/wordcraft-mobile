@@ -530,8 +530,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     /** Which front end WordCraft opens on. Desktop Mode (Settings › Display Preferences) turns it on
-     * and it stays on — across a restart, and across the back gesture — until Pocket Mode hands back
-     * from the desktop interface (View › Views), which turns it off over the hand-off. */
+     * and it stays on — across a restart, and across the back gesture — until Pocket Mode is chosen:
+     * from the desktop interface (View › Views) over the hand-off, or here in Settings. */
     var desktopInterfaceOn by mutableStateOf(prefs.getBoolean("desktopInterface", false))
         private set
 
@@ -549,9 +549,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putString("theme", choice).apply()
     }
 
+    /**
+     * Pocket Mode is a choice about *which interface to use*, not only how pages reflow: turning it
+     * on here also drops the remembered desktop interface, so the next launch opens the phone UI
+     * rather than redirecting to `DesktopActivity` again. (Choosing Desktop Mode stores the other
+     * way; egui's View › Views › Pocket Mode clears it over the hand-off.)
+     */
     fun choosePocketMode(on: Boolean) {
         pocketMode = on
         prefs.edit().putBoolean("startMobileView", on).apply()
+        if (on) {
+            desktopInterfaceOn = false
+            prefs.edit().putBoolean("desktopInterface", false).apply()
+        }
     }
 
     /**

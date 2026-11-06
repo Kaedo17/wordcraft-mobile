@@ -170,15 +170,20 @@ Turning Pocket Mode off and restarting the app left it off, stored under the ret
 key.
 
 **Desktop Mode persists (2026-11-06).** The choice is stored (`desktopInterface`, in the phone app's
-`settings` preferences): Settings › Display Preferences › Desktop Mode sets it, and egui's View ›
-Views › Pocket Mode clears it as it hands back. Opening WordCraft on a remembered desktop interface
+`settings` preferences): Settings › Display Preferences › Desktop Mode sets it, and Pocket Mode clears
+it from either side — egui's View › Views › Pocket Mode as it hands back, or Pocket Mode chosen in
+Settings — so whichever interface you last chose is the one the next launch opens. Opening WordCraft on
+a remembered desktop interface
 redirects the launcher activity to `DesktopActivity` — which is not exported, so only an in-app intent
 can reach it — and the phone activity retires when egui reports its window is up, which is why the
 back gesture no longer uncovered Pocket Mode "like another page". The report is posted over JNI from
 the app creator (`apps/wordcraft/src/lib.rs`), which eframe runs only once its event loop and window
 exist: a desktop front end that cannot recreate its loop never reports, so the phone interface stays
 on screen rather than an empty task. Both hand-off channels are drained by `WordcraftApplication` now,
-not by the phone activity, because that activity may be finished while egui is on screen.
+not by the phone activity, because that activity may be finished while egui is on screen. Handing back
+from egui therefore **recreates** the phone activity — its window can show nothing for a moment before
+Compose draws (seen on a Huawei phone at 1:45–1:46); nothing is lost, the document was made safe before
+the switch, and the next draw shows the library or editor as usual.
 
 **The desktop front end hides the phone's bars (2026-11-06).** egui's ribbon tabs live at the very top
 of its window, and Android's status bar drew over them and took the touches: a finger could never reach
