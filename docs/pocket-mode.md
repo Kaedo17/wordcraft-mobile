@@ -8,7 +8,9 @@ front end, and — on Android — the way the two front ends hand the session to
 *Status: the engine, the layout mode, the switch and the bridge are implemented and tested. On the phone the
 interface options sit in Settings › Display Preferences, and Desktop Mode is pinned to landscape
 (2026-11-06: checked against the packaged manifest by CI, and re-run on a phone — the run also found
-that the pocket column overflows the screen at its default width, below). Both hand-off
+that the pocket column overflows the screen at its default width, below). **The desktop interface is
+now remembered**: WordCraft reopens on it and the back gesture leaves the app instead of uncovering
+Pocket Mode, which stays the way back. Both hand-off
 directions now run on a phone with the CI-built debug APK: phone → desktop, and Pocket Mode → phone,
 which previously posted nothing because JNI's class lookup could not see the app's own classes from
 egui's native thread. Returning to the desktop front end *after* Pocket Mode is a separate open limit
@@ -167,6 +169,21 @@ screen, whatever the phone is doing. Back from it returned `MainActivity`, whose
 Turning Pocket Mode off and restarting the app left it off, stored under the retained `startMobileView`
 key.
 
+**Desktop Mode persists (2026-11-06).** The choice is stored (`desktopInterface`, in the phone app's
+`settings` preferences): Settings › Display Preferences › Desktop Mode sets it, and egui's View ›
+Views › Pocket Mode clears it as it hands back. Opening WordCraft on a remembered desktop interface
+redirects the launcher activity to `NativeActivity` — which is not exported, so only an in-app intent
+can reach it — and the phone activity retires when egui reports its window is up, which is why the
+back gesture no longer uncovered Pocket Mode "like another page". The report is posted over JNI from
+the app creator (`apps/wordcraft/src/lib.rs`), which eframe runs only once its event loop and window
+exist: a desktop front end that cannot recreate its loop never reports, so the phone interface stays
+on screen rather than an empty task. Both hand-off channels are drained by `WordcraftApplication` now,
+not by the phone activity, because that activity may be finished while egui is on screen.
+
+**Auto means 100 % on Android (`crates/ui-egui/src/theme.rs`).** Android reports the screen's density
+as the display scale — 3.0 on a 480 dpi phone — and Auto followed it, drawing the whole interface
+three times as large. On that build Auto is one screen pixel per point; desktop and web keep following
+the system's scale, and a size chosen in File › Options › Display stays absolute everywhere.
 **What that run found:** at the default pocket width the phone's pocket column is **wider than the
 screen** — text is cut off at the right edge and a horizontal swipe is needed to read the rest, while
 Print View wraps inside the viewport. Nothing in this arc touched the layout, so it is Pocket Mode's
@@ -181,6 +198,10 @@ editor stays. Returning *from* Pocket Mode in the same process needs its own fix
 pocket mode is on, or let the entry crate build a fresh event loop for a second `android_main`.
 `REORDER_TO_FRONT` (commit `e5195f65`) exists because a destroyed `NativeActivity` cannot be relaunched,
 so this is the same limitation seen from the other side.
+
+Persistence does not hide this: with the choice remembered, each launch redirects to `NativeActivity`,
+which fails, and the phone interface stays on screen each time — the choice only clears when Pocket
+Mode hands back from a desktop front end that really came up.
 
 ## Testing
 

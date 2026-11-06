@@ -547,6 +547,11 @@ pub struct SharedStorageAccess {
     /// one front end. Android cannot swap one activity's UI for another's in place, so the switch
     /// is a hand-off and the app reports it when the start fails.
     pub switch_front_end: Option<std::sync::Arc<dyn Fn(bool) -> bool + Send + Sync>>,
+    /// Tell the phone app this front end's window is up, so it can retire the activity that was
+    /// started underneath this one. Called from the app creator, which eframe only runs once its
+    /// event loop and window exist — a desktop front end that cannot recreate its event loop never
+    /// reports, and the phone interface stays on screen instead of an empty task.
+    pub front_end_up: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Android's entry: like [`run`], but with the activity's handle, which eframe's event loop
@@ -730,6 +735,16 @@ fn run_inner(#[cfg(target_os = "android")] android_app: Option<android_activity:
             }
             for f in other_files {
                 open_non_unicode(&mut app, &f);
+            }
+            // Android: this closure runs only after eframe built the event loop and the window,
+            // so it is the honest "the desktop interface is up" signal. The phone app finishes its
+            // own activity on it; otherwise that activity sits behind this one and the back gesture
+            // uncovers the phone interface instead of leaving WordCraft.
+            #[cfg(target_os = "android")]
+            if let Some(access) = access.as_ref() {
+                if let Some(report) = access.front_end_up.as_ref() {
+                    report();
+                }
             }
             Ok(Box::new(App {
                 app,

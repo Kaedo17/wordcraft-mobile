@@ -239,6 +239,32 @@ impl AndroidAccess {
             }
         }
     }
+
+    /// Tell the phone app this front end's window is up. The Compose app finishes its own activity
+    /// on the report, so this one is the only activity left in the task and the back gesture leaves
+    /// WordCraft instead of uncovering the pocket interface underneath.
+    ///
+    /// Posted through **the app's own class loader**, exactly like `start_other_front_end`: this
+    /// runs on egui's native thread, whose loader is Android's system loader and never holds this
+    /// APK's classes. Best effort — an unreachable JVM, a class that won't load or a method that
+    /// isn't there logs what failed and changes nothing, leaving the phone activity behind this one
+    /// (the old behaviour) rather than emptying the task.
+    pub fn report_interface_up(self) {
+        let posted = self.with_env(|env| -> jni::errors::Result<(bool, String)> {
+            let act = self.activity();
+            match post_interface_up(env, &act) {
+                Ok(()) => Ok(match Self::started(env) {
+                    Ok(true) => (true, String::new()),
+                    Ok(false) => (false, "the phone app refused the report".into()),
+                    Err(why) => (false, format!("checking the report: {why}")),
+                }),
+                Err(why) => Ok((false, failure_note(env, &why))),
+            }
+        });
+        if let Some((false, why)) = posted {
+            log::warn!("android access: could not report the desktop interface up ({why}; the phone activity stays behind)");
+        }
+    }
 }
 
 /// Post Pocket Mode's switch request to the phone app's Kotlin object.
@@ -255,6 +281,20 @@ fn post_handoff(env: &mut JNIEnv, act: &JObject, pocket: bool) -> jni::errors::R
     let handoff: JClass =
         env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(&handoff_name)])?.l()?.into();
     env.call_static_method(&handoff, "requestPocket", "(Z)V", &[JValue::Bool(pocket as jni::sys::jboolean)])?;
+    Ok(())
+}
+
+/// Post "the desktop interface is up" to the phone app's Kotlin object. The loader is read off the
+/// `Application` object for the same reason as `post_handoff` — this thread's loader cannot see the
+/// APK's classes — and every step can fail, for the caller to log.
+fn post_interface_up(env: &mut JNIEnv, act: &JObject) -> jni::errors::Result<()> {
+    let app = env.call_method(act, "getApplication", "()Landroid/app/Application;", &[])?.l()?;
+    let app_class = env.get_object_class(&app)?;
+    let loader = env.call_method(&app_class, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+    let handoff_name = env.new_string(COMPOSE_HANDOFF)?;
+    let handoff: JClass =
+        env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(&handoff_name)])?.l()?.into();
+    env.call_static_method(&handoff, "reportInterfaceUp", "()V", &[])?;
     Ok(())
 }
 

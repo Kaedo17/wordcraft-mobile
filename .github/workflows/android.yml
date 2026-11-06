@@ -51,8 +51,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Bridge tests
-        run: cargo test -p wordcraft-android-bridge
+      - name: Bridge and entry-crate tests
+        # The entry crate's pins cover the JNI paths that only run on a device: the front-end
+        # hand-off and the "desktop interface is up" report, both read through the app's loader.
+        run: cargo test -p wordcraft-android-bridge -p wordcraft-android
       - name: Layering
         run: cargo xtask layers
       - name: Assets are all attributed

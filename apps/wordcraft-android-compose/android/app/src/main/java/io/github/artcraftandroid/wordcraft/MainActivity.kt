@@ -74,6 +74,9 @@ class MainActivity : ComponentActivity() {
         // the bars' icons follow the theme: dark on the light bars, light on the dark ones
         enableEdgeToEdge(SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT), SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
+        // The remembered interface wins over this activity's own UI; see redirectDesktopLaunch.
+        if (redirectDesktopLaunch()) return
+        (application as? WordcraftApplication)?.phoneActivity = this
         window.isNavigationBarContrastEnforced = false
         setContent {
             WordcraftTheme(vm.themeChoice) {
@@ -145,24 +148,44 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        lifecycleScope.launch {
-            // Pocket Mode's hand-off from egui: its native thread cannot start an activity — Android
-            // can drop a background-thread launch without a word — so it posts here (FrontEndHandoff)
-            // and the switch runs on this, the activity's main thread. `pocket` picks the front end.
-            for (pocket in FrontEndHandoff.requests) {
-                launchSafely {
-                    val target = if (pocket) "io.github.artcraftandroid.wordcraft.MainActivity" else "android.app.NativeActivity"
-                    startActivity(Intent().setClassName(packageName, target).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-                }
-            }
-        }
+        // Pocket Mode's hand-off from egui is drained by WordcraftApplication, not here: this
+        // activity may already be finished while egui is on screen, and the request still has to
+        // switch back to the phone interface.
         if (savedInstanceState == null) handle(intent)
+    }
+
+    /**
+     * The interface the person chose is remembered: Settings › Display Preferences › Desktop Mode,
+     * or egui's View › Views › Pocket Mode handing back. Opening WordCraft on the desktop interface
+     * needs an explicit in-app intent — `NativeActivity` is not exported — and this activity stays
+     * alive until egui reports its window is up (`WordcraftApplication` finishes it), so a desktop
+     * front end that cannot start leaves the phone interface on screen rather than an empty task.
+     * A document another app hands over still opens here, on the phone interface.
+     */
+    private fun redirectDesktopLaunch(): Boolean {
+        if (!vm.desktopInterfaceOn || intent?.data != null) return false
+        launchSafely {
+            startActivity(Intent().setClassName(packageName, "android.app.NativeActivity").addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+        }
+        return true
+    }
+
+    /** The hand-off can change the interface choice while this screen is still alive. */
+    override fun onResume() {
+        super.onResume()
+        vm.refreshDesktopInterface()
     }
 
     /** Leaving the app saves the changes to the document's own file (AutoSave). */
     override fun onStop() {
         super.onStop()
         vm.autoSaveNow()
+    }
+
+    /** The hand-off must not finish an activity that is already gone. */
+    override fun onDestroy() {
+        super.onDestroy()
+        (application as? WordcraftApplication)?.let { if (it.phoneActivity === this) it.phoneActivity = null }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -194,15 +217,27 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * Pocket Mode hand-off requests coming from egui's native thread. Rust's JNI calls `requestPocket`
- * directly; `requests` is drained by MainActivity's main-thread loop, which performs the actual
- * `startActivity` — Android can silently drop an activity started from a background thread.
+ * Hand-offs between the two front ends of this APK, requested from egui's native thread. Rust's JNI
+ * calls the entry points directly; both channels are drained by `WordcraftApplication` on the main
+ * thread, because Android can silently drop an activity started from a background thread.
  */
 object FrontEndHandoff {
+    /** Pocket Mode's choice: `true` for the phone interface, `false` to stay on the desktop one. */
     val requests = Channel<Boolean>(Channel.CONFLATED)
+
+    /** egui's window is up, posted once eframe has built its event loop and window. */
+    val interfaceUp = Channel<Unit>(Channel.CONFLATED)
 
     @JvmStatic
     fun requestPocket(pocket: Boolean) {
         requests.trySend(pocket)
+    }
+
+    /** Posted over JNI (`apps/wordcraft-android/src/android_access.rs`) when the desktop front end
+     * really started. The phone activity finishes on it: left in the task behind egui, the back
+     * gesture uncovered Pocket Mode "like another page" instead of leaving WordCraft. */
+    @JvmStatic
+    fun reportInterfaceUp() {
+        interfaceUp.trySend(Unit)
     }
 }

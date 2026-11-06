@@ -194,8 +194,10 @@ fun SettingsScreen(vm: AppViewModel, engineVersion: String) {
             SettingsSwitch("Pocket Mode", "Reflow documents to a phone's column instead of pages", vm.pocketMode, vm::choosePocketMode)
             // The desktop-style front end of this same APK (the egui app): its own session, which
             // opens documents through its own browser. Android pins it to landscape, so it never
-            // shows a portrait screen; the phone front end still turns with the device.
-            SettingsItem("Desktop Mode", "Opens the desktop interface: landscape only, portrait is not available") {
+            // shows a portrait screen; the phone front end still turns with the device. The choice is
+            // kept: WordCraft reopens on this interface, and only Pocket Mode (View › Views there)
+            // hands back to the phone.
+            SettingsItem("Desktop Mode", "Opens the desktop interface — landscape only — and WordCraft stays there until Pocket Mode hands back") {
                 vm.openDesktopInterface()
             }
             SettingsLine()

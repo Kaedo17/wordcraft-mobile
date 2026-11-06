@@ -529,6 +529,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var pocketMode by mutableStateOf(prefs.getBoolean("startMobileView", true))
         private set
 
+    /** Which front end WordCraft opens on. Desktop Mode (Settings › Display Preferences) turns it on
+     * and it stays on — across a restart, and across the back gesture — until Pocket Mode hands back
+     * from the desktop interface (View › Views), which turns it off over the hand-off. */
+    var desktopInterfaceOn by mutableStateOf(prefs.getBoolean("desktopInterface", false))
+        private set
+
+    /** Re-read the choice: the hand-off changes it while this screen may still be open. */
+    fun refreshDesktopInterface() {
+        desktopInterfaceOn = prefs.getBoolean("desktopInterface", false)
+    }
+
     /** Changes are saved to the document's own file as they are made. */
     var autoSaveOn by mutableStateOf(prefs.getBoolean("autoSave", true))
         private set
@@ -544,13 +555,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Settings › Display Preferences › Desktop Mode: open this APK's desktop-style front end. Android
-     * pins that activity to landscape (`AndroidManifest.xml` and `apps/wordcraft-android/Cargo.toml`),
-     * so it never shows a portrait screen; the phone front end still turns with the device. The
-     * request goes over the same channel the hand-off uses, because `NativeActivity` is not exported
-     * and nothing outside the APK can start it.
+     * Settings › Display Preferences › Desktop Mode: open this APK's desktop-style front end and
+     * *stay* on it. Android pins that activity to landscape (`AndroidManifest.xml` and
+     * `apps/wordcraft-android/Cargo.toml`), so it never shows a portrait screen; the phone front end
+     * still turns with the device. The choice is stored, so reopening WordCraft comes back here, and
+     * the phone activity finishes once egui reports its window is up, so the back gesture leaves the
+     * app instead of uncovering Pocket Mode. Pocket Mode (the desktop interface's View › Views) is
+     * the way back. The request goes over the same channel the hand-off uses, because
+     * `NativeActivity` is not exported and nothing outside the APK can start it.
      */
     fun openDesktopInterface() {
+        desktopInterfaceOn = true
+        prefs.edit().putBoolean("desktopInterface", true).apply()
         desktopRequests.trySend(Unit)
         closeSettings()
     }

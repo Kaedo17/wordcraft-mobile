@@ -116,13 +116,28 @@ impl InterfaceSize {
         self.0.is_none()
     }
 
-    /// The egui zoom factor on a display whose own scale (native pixels per point) is `native`:
-    /// 1.0 for Auto, or the chosen size with the display's scale divided back out.
-    pub fn zoom_factor(self, native: f32) -> f32 {
+    /// The egui zoom factor on a display whose own scale (native pixels per point) is `native`,
+    /// choosing whether Auto follows that scale (`follows_system_scale`) or draws at 100 %. A
+    /// chosen size divides the display's scale back out either way, so it stays absolute.
+    pub fn zoom_factor_on(self, native: f32, follows_system_scale: bool) -> f32 {
         match self.0 {
-            None => 1.0,
+            None if follows_system_scale => 1.0,
+            // Auto on a platform that does not follow the system's scale: one screen pixel per
+            // point, whatever the display reports.
+            None => 1.0 / usable_scale(native),
             Some(pct) => f32::from(pct) / 100.0 / usable_scale(native),
         }
+    }
+
+    /// Whether Auto follows the display's own scale. True everywhere except Android, where that
+    /// scale is the screen's density — 3.0 on a 480 dpi phone — and following it draws the whole
+    /// interface three times as large; there Auto is 100 % instead, and File › Options reports
+    /// that size too ([`InterfaceSize::drawn_percent`]).
+    pub const AUTO_FOLLOWS_SYSTEM_SCALE: bool = !cfg!(target_os = "android");
+
+    /// The zoom factor this build applies; see [`InterfaceSize::zoom_factor_on`] for the choice.
+    pub fn zoom_factor(self, native: f32) -> f32 {
+        self.zoom_factor_on(native, Self::AUTO_FOLLOWS_SYSTEM_SCALE)
     }
 
     /// The size the interface is drawn at on that display, in percent (screen pixels per point × 100).
@@ -832,6 +847,26 @@ mod tests {
         let mut sorted = super::InterfaceSize::PRESETS;
         sorted.sort_unstable();
         assert_eq!(sorted, super::InterfaceSize::PRESETS, "the Options list reads top to bottom");
+    }
+
+    /// Android's Auto is 100 %, not the screen's density scale: a 480 dpi phone reports 3.0, and
+    /// following it would draw the whole interface three times as large. `zoom_factor_on` is the
+    /// choice itself, so both answers are testable on any host; each build picks one through
+    /// `AUTO_FOLLOWS_SYSTEM_SCALE`.
+    #[test]
+    fn auto_is_the_system_scale_or_one_hundred_percent() {
+        let auto = super::InterfaceSize::AUTO;
+        assert_eq!(auto.zoom_factor_on(3.0, true), 1.0, "Auto follows the system's scale where it is followed");
+        assert_eq!(auto.zoom_factor_on(3.0, false), 1.0 / 3.0, "Auto draws one pixel per point where it is not");
+        assert_eq!(
+            auto.drawn_percent(3.0),
+            if super::InterfaceSize::AUTO_FOLLOWS_SYSTEM_SCALE { 300 } else { 100 },
+            "Options reports the size actually drawn",
+        );
+        let chosen = super::InterfaceSize::from_percent(150.0).unwrap();
+        assert_eq!(chosen.zoom_factor_on(3.0, false), 0.5, "a chosen size stays absolute on either platform");
+        assert_eq!(chosen.zoom_factor_on(3.0, true), 0.5, "and does not depend on the Auto choice");
+        assert_eq!(auto.zoom_factor_on(f32::NAN, false), 1.0, "an unknown display scale reads as 1.0");
     }
 
     /// WCAG contrast ratio between two opaque colours.

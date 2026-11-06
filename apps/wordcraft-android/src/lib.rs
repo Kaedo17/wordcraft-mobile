@@ -38,6 +38,10 @@ pub fn android_main(app: android_activity::AndroidApp) {
         // Pocket Mode's hand-off: start the other front end's activity, which re-opens the
         // document this one has just made safe.
         switch_front_end: Some(std::sync::Arc::new(move |pocket: bool| a.start_other_front_end(pocket))),
+        // "This window is up", reported from the app creator: the phone app finishes its own
+        // activity on it, so the desktop interface is the only one left in the task and the back
+        // gesture leaves WordCraft rather than uncovering the pocket screen underneath.
+        front_end_up: Some(std::sync::Arc::new(move || a.report_interface_up())),
     });
     if let Err(e) = wordcraft::run_android(app, shared) {
         log::error!("wordcraft exited with an error: {e}");
@@ -68,4 +72,30 @@ fn pocket_handoff_loads_the_class_with_the_apps_own_loader() {
         !hand_off.contains("io/github/artcraftandroid/wordcraft/FrontEndHandoff"),
         "the hand-off must not ask JNI's FindClass for a class of this APK: this thread's loader cannot see it"
     );
+}
+
+/// The phone app retires its own activity only after egui's window really exists, so a desktop
+/// front end that cannot recreate its event loop leaves the phone interface on screen instead of an
+/// empty task. JNI only runs on a device, so this pins the source: the report is posted through the
+/// app's own loader — the same reason `start_other_front_end` must be — and the shared app carries
+/// the hook and calls it from the app creator, which eframe runs only once the loop and window are
+/// built.
+#[test]
+fn interface_up_report_posts_through_the_apps_own_loader() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let access = std::fs::read_to_string(dir.join("src/android_access.rs")).unwrap();
+    let post = access.split("fn post_interface_up").nth(1).unwrap();
+    assert!(post.contains("getApplication"), "the loader is read off the running app");
+    assert!(post.contains("getClassLoader"), "the app's own loader must be asked for");
+    assert!(post.contains("loadClass"), "and the class loaded through it");
+    assert!(post.contains("reportInterfaceUp"), "the phone app's hand-off object gets the report");
+    assert!(
+        !post.contains("io/github/artcraftandroid/wordcraft/FrontEndHandoff"),
+        "the report must not ask JNI's FindClass for a class of this APK: this thread's loader cannot see it"
+    );
+    assert!(access.contains("pub fn report_interface_up"), "the entry crate exposes the report");
+
+    let shared = std::fs::read_to_string(dir.join("../wordcraft/src/lib.rs")).unwrap();
+    assert!(shared.contains("pub front_end_up: Option<"), "the shared app carries the report hook");
+    assert!(shared.contains("access.front_end_up"), "and calls it once the window exists");
 }
