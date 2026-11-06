@@ -7,8 +7,8 @@ front end, and — on Android — the way the two front ends hand the session to
 
 *Status: the engine, the layout mode, the switch and the bridge are implemented and tested. On the phone the
 interface options sit in Settings › Display Preferences, and Desktop Mode is pinned to landscape
-(2026-11-06; the pins are checked against the packaged manifest by CI, and have not been re-run on a
-device). Both hand-off
+(2026-11-06: checked against the packaged manifest by CI, and re-run on a phone — the run also found
+that the pocket column overflows the screen at its default width, below). Both hand-off
 directions now run on a phone with the CI-built debug APK: phone → desktop, and Pocket Mode → phone,
 which previously posted nothing because JNI's class lookup could not see the app's own classes from
 egui's native thread. Returning to the desktop front end *after* Pocket Mode is a separate open limit
@@ -152,6 +152,26 @@ egui's scaled hit targets reliably (`uiScale` 175, and the soft keyboard resizes
 Views › Pocket Mode could not be tapped from the shell. The saved-state path runs the identical
 interception and the identical JNI hand-off, so it proves the fix; tapping the ribbon by hand remains
 the unconfirmed part.
+
+**The Settings move and the landscape pin are verified on the same phone (2026-11-06, POCO X6 Pro,
+Android 17/API 37, run 42182262170's debug APK, installed over the local debug build — the CI debug
+keystore differs, so `adb uninstall` first, which clears app-private storage).** Settings showed
+Display Preferences › Theme, **Pocket Mode** ("Reflow documents to a phone's column instead of pages")
+and **Desktop Mode** ("Opens the desktop interface: landscape only, portrait is not available"), with
+General holding only AutoSave, and the ⋯ sheet no longer listed the desktop front end. Tapping Desktop
+Mode put `NativeActivity` on screen with the window measured **2712x1220** while the phone was held
+portrait with auto-rotate on, and the window stayed landscape when Android was forced to portrait
+(`user_rotation=0`, auto-rotate off) and then to landscape — Desktop Mode never shows a portrait
+screen, whatever the phone is doing. Back from it returned `MainActivity`, whose window measured
+1220x2712 forced portrait and 2712x1220 forced landscape: Pocket Mode still turns with the device.
+Turning Pocket Mode off and restarting the app left it off, stored under the retained `startMobileView`
+key.
+
+**What that run found:** at the default pocket width the phone's pocket column is **wider than the
+screen** — text is cut off at the right edge and a horizontal swipe is needed to read the rest, while
+Print View wraps inside the viewport. Nothing in this arc touched the layout, so it is Pocket Mode's
+own open follow-up on a phone: the column should fit the screen at its default width rather than
+overflow it.
 
 **Still failing, and separate:** Pocket Mode destroys egui's activity once the phone front end takes the
 screen, so Settings › Display Preferences › Desktop Mode afterwards starts `NativeActivity` but egui
