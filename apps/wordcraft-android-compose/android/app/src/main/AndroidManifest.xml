@@ -23,16 +23,20 @@
              FLAG_ACTIVITY_CLEAR_TOP lands on it rather than stacking another).
              Desktop Mode is landscape only: `screenOrientation="landscape"` pins this activity so
              turning the phone portrait never re-lays the desktop window out (Settings › Display
-             Preferences › Desktop Mode opens it). The Compose activity below keeps the sensor, so
-             Pocket Mode still reads in either way the phone is held. -->
+             Preferences › Desktop Mode opens it, and the choice is kept until Pocket Mode hands back
+             from there). The Compose activity below keeps the sensor, so Pocket Mode still reads in
+             either way the phone is held. `DesktopActivity` hides the system bars while it is on
+             screen: egui's ribbon tabs live at the top of the window, and the status bar drew over
+             them and took the touches, so Pocket Mode could never be reached by finger. -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name=".DesktopActivity"
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
             android:exported="false"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
-            <!-- winit's event loop needs to know which library to load and where to enter it. -->
+            <!-- winit's event loop needs to know which library to load and where to enter it.
+                 (`DesktopActivity` is a `NativeActivity` subclass that only hides the system bars.) -->
             <meta-data android:name="android.app.lib_name" android:value="wordcraft_android" />
         </activity>
 

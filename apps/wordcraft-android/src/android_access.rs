@@ -27,8 +27,10 @@ use jni::{JNIEnv, JavaVM};
 /// `applicationIdSuffix` changes the package, never the class name, so the hand-off resolves it
 /// inside whatever package the running app has.
 const COMPOSE_ACTIVITY: &str = "io.github.artcraftandroid.wordcraft.MainActivity";
-/// This front end's activity, as the manifest declares it (`android:name="android.app.NativeActivity"`).
-const EGUI_ACTIVITY: &str = "android.app.NativeActivity";
+/// This front end's activity, as the manifest declares it (`android:name=".DesktopActivity"`, a
+/// `NativeActivity` subclass). Only ever a log line: the hand-off's `startActivity` runs in Kotlin,
+/// which names the class through the class object rather than a string.
+const DESKTOP_ACTIVITY: &str = "io.github.artcraftandroid.wordcraft.DesktopActivity";
 /// The phone app's hand-off object, as a **binary** class name — the spelling `ClassLoader.loadClass`
 /// takes. JNI's own name form (`io/github/...`) is the one `FindClass` wants, and that lookup never
 /// finds this class here: see `start_other_front_end`.
@@ -182,7 +184,7 @@ impl AndroidAccess {
     }
 
     /// Hand the session to the other front end. `pocket` picks the direction — the Compose
-    /// app's `MainActivity` for the pocket front end, this app's own `NativeActivity` to come
+    /// app's `MainActivity` for the pocket front end, this app's own `DesktopActivity` to come
     /// back.
     ///
     /// Android has no way to swap one activity's UI for another's in place (each owns its window
@@ -213,7 +215,7 @@ impl AndroidAccess {
     /// that isn't there logs what failed and returns `false`, and the caller reports that the switch
     /// did not happen rather than pretending it did.
     pub fn start_other_front_end(self, pocket: bool) -> bool {
-        let target = if pocket { COMPOSE_ACTIVITY } else { EGUI_ACTIVITY };
+        let target = if pocket { COMPOSE_ACTIVITY } else { DESKTOP_ACTIVITY };
         let posted = self.with_env(|env| -> jni::errors::Result<(bool, String)> {
             let act = self.activity();
             match post_handoff(env, &act, pocket) {

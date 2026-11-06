@@ -142,7 +142,9 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 - 2026-11-06 (Android): **Desktop Mode persists.** Settings › Display Preferences › Desktop Mode stores the
   choice (`desktopInterface`) and reopening WordCraft opens the desktop interface again — the launcher
-  activity redirects to `NativeActivity`, which is not exported. The phone activity retires when egui
+  activity redirects to `DesktopActivity`, a `NativeActivity` subclass which is not exported and hides the
+  phone's system bars: the status bar had drawn over egui's ribbon tabs and taken the touches, so no finger
+  could reach View › Views › Pocket Mode, the way back. The phone activity retires when egui
   reports its window is up (posted over JNI from the app creator, which eframe runs only once its event
   loop and window exist), so the back gesture leaves WordCraft instead of uncovering Pocket Mode "like
   another page"; a desktop front end that cannot recreate its loop never reports, so the phone interface

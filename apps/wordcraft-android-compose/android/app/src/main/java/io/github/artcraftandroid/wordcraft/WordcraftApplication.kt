@@ -39,7 +39,7 @@ class WordcraftApplication : Application() {
                 val switch = if (pocket) {
                     Intent(this@WordcraftApplication, MainActivity::class.java)
                 } else {
-                    Intent().setClassName(packageName, "android.app.NativeActivity")
+                    Intent(this@WordcraftApplication, DesktopActivity::class.java)
                 }
                 switch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
                 runCatching { startActivity(switch) }

@@ -128,7 +128,7 @@ jobs:
           echo "--- manifest activities"
           aapt2="$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort | tail -1)"
           "$aapt2" dump xmltree --file AndroidManifest.xml "$APK" > /tmp/manifest.txt
-          for act in 'android.app.NativeActivity' 'MainActivity'; do
+          for act in 'DesktopActivity' 'MainActivity'; do
             grep -q "$act" /tmp/manifest.txt || { echo "missing activity $act"; exit 1; }
             echo "ok: $act"
           done
@@ -205,7 +205,18 @@ jobs:
                       return name, value
               return None, None
           
-          desktop = packaged.get("android.app.NativeActivity")
+          def desktop(values):
+              """The desktop front end's activity, however its name was spelled: ".DesktopActivity"
+              resolves against the source package, so the packaged dump shows
+              io.github.artcraftandroid.wordcraft.DesktopActivity. Matches by the last name segment."""
+              for name, value in values.items():
+                  if name == "DesktopActivity" or name.endswith(".DesktopActivity"):
+                      return name, value
+              return None, None
+
+          desktop_name, desktop = desktop(packaged)
+          if desktop_name is None:
+              sys.exit("no desktop activity in the packaged manifest")
           if desktop != landscape:
               sys.exit("the desktop front end is not pinned to landscape: " + repr(desktop))
           phone_name, phone_orient = phone(packaged)
@@ -222,8 +233,11 @@ jobs:
               declared[name.group(1) if name else "?"] = orient.group(1) if orient else None
           for name, orient in sorted(declared.items()):
               print("  source declares", name, "screenOrientation", orient)
-          if declared.get("android.app.NativeActivity") != "landscape":
-              sys.exit("the desktop front end does not declare landscape: " + repr(declared.get("android.app.NativeActivity")))
+          src_desktop_name, src_desktop = desktop(declared)
+          if src_desktop_name is None:
+              sys.exit("no desktop activity in the source manifest")
+          if src_desktop != "landscape":
+              sys.exit("the desktop front end does not declare landscape: " + repr(src_desktop))
           src_phone_name, src_phone_orient = phone(declared)
           if src_phone_name is None:
               sys.exit("no phone activity in the source manifest")

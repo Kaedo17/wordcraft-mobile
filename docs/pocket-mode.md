@@ -63,7 +63,7 @@ Android 14+ can silently drop an activity started from a background thread — t
 happen on the activity's main thread, which is the phone app's. Coming back out of Pocket Mode
 posts the same request with the egui activity as the target; the phone app also reaches egui on
 demand through **Settings › Display Preferences › Desktop Mode** (the ⋯ › Open Desktop Interface row
-until 2026-11-06, over the same request channel), since `NativeActivity` is not exported and nothing
+until 2026-11-06, over the same request channel), since the desktop activity is not exported and nothing
 outside the APK — not even adb — can start it.
 
 The document is made safe **before** anything is started, and a failed save **cancels** the switch
@@ -78,7 +78,7 @@ kept its stored `startMobileView` key, so a choice made before the move still re
 **Desktop Mode**, which opens this APK's desktop-style front end. General now holds only AutoSave,
 and the ⋯ sheet no longer offers the desktop front end: the option **moved**, it is not duplicated.
 
-Desktop Mode is **landscape only**. The `NativeActivity` it opens declares
+Desktop Mode is **landscape only**. The desktop activity it opens (`DesktopActivity`, a `NativeActivity` subclass) declares
 `android:screenOrientation="landscape"` in the Gradle manifest, and `apps/wordcraft-android` pins
 the same for the `cargo-apk` build (`orientation = "landscape"`), where that activity is the only
 one in the APK. Turning the phone portrait therefore never re-lays the desktop window out. The
@@ -101,7 +101,7 @@ libraries as generated jniLibs:
 | Activity | Class | Library | Role |
 |---|---|---|---|
 | Compose | `io.github.artcraftandroid.wordcraft.MainActivity` | `libwordcraft_android_bridge.so` | the launcher, the pocket front end |
-| egui | `android.app.NativeActivity` | `libwordcraft_android.so` | the desktop-style front end, pinned to landscape |
+| egui | `DesktopActivity` (a `NativeActivity` subclass) | `libwordcraft_android.so` | the desktop-style front end, pinned to landscape |
 
 The phone app's main-thread loop targets these explicitly (`setClassName` with the running
 package, so the debug build's `applicationIdSuffix` resolves correctly), reaching nothing outside
@@ -172,7 +172,7 @@ key.
 **Desktop Mode persists (2026-11-06).** The choice is stored (`desktopInterface`, in the phone app's
 `settings` preferences): Settings › Display Preferences › Desktop Mode sets it, and egui's View ›
 Views › Pocket Mode clears it as it hands back. Opening WordCraft on a remembered desktop interface
-redirects the launcher activity to `NativeActivity` — which is not exported, so only an in-app intent
+redirects the launcher activity to `DesktopActivity` — which is not exported, so only an in-app intent
 can reach it — and the phone activity retires when egui reports its window is up, which is why the
 back gesture no longer uncovered Pocket Mode "like another page". The report is posted over JNI from
 the app creator (`apps/wordcraft/src/lib.rs`), which eframe runs only once its event loop and window
@@ -180,6 +180,12 @@ exist: a desktop front end that cannot recreate its loop never reports, so the p
 on screen rather than an empty task. Both hand-off channels are drained by `WordcraftApplication` now,
 not by the phone activity, because that activity may be finished while egui is on screen.
 
+**The desktop front end hides the phone's bars (2026-11-06).** egui's ribbon tabs live at the very top
+of its window, and Android's status bar drew over them and took the touches: a finger could never reach
+View › Views › Pocket Mode, which is the only way back once Desktop Mode is remembered. So the desktop
+activity is now a `NativeActivity` subclass, `DesktopActivity`, that hides the system bars and brings them
+back on a swipe from an edge (`WindowInsetsController`, API 30+; on API 29 the bars stay as Android draws
+them, which is the old behaviour).
 **Auto means 100 % on Android (`crates/ui-egui/src/theme.rs`).** Android reports the screen's density
 as the display scale — 3.0 on a 480 dpi phone — and Auto followed it, drawing the whole interface
 three times as large. On that build Auto is one screen pixel per point; desktop and web keep following
@@ -191,7 +197,7 @@ own open follow-up on a phone: the column should fit the screen at its default w
 overflow it.
 
 **Still failing, and separate:** Pocket Mode destroys egui's activity once the phone front end takes the
-screen, so Settings › Display Preferences › Desktop Mode afterwards starts `NativeActivity` but egui
+screen, so Settings › Display Preferences › Desktop Mode afterwards starts `DesktopActivity` but egui
 exits at once —
 `wordcraft exited with an error: winit EventLoopError: EventLoop can't be recreated` — and the phone
 editor stays. Returning *from* Pocket Mode in the same process needs its own fix: keep egui alive while
@@ -199,7 +205,7 @@ pocket mode is on, or let the entry crate build a fresh event loop for a second 
 `REORDER_TO_FRONT` (commit `e5195f65`) exists because a destroyed `NativeActivity` cannot be relaunched,
 so this is the same limitation seen from the other side.
 
-Persistence does not hide this: with the choice remembered, each launch redirects to `NativeActivity`,
+Persistence does not hide this: with the choice remembered, each launch redirects to `DesktopActivity`,
 which fails, and the phone interface stays on screen each time — the choice only clears when Pocket
 Mode hands back from a desktop front end that really came up.
 
@@ -213,7 +219,7 @@ Mode hands back from a desktop front end that really came up.
 - `crates/ui-egui/src/lib.rs`: the `ui.json` round trip with junk values.
 - `crates/android-bridge/src/tests.rs`: `mobile_view_reflows_to_the_width_and_print_brings_the_pages_back`
   and the rest of the ported suite (52 tests).
-- `.github/workflows/android.yml`: the packaged manifest pins `NativeActivity` to landscape (Desktop
+- `.github/workflows/android.yml`: the packaged manifest pins `DesktopActivity` to landscape (Desktop
   Mode) and leaves `MainActivity` on the sensor (Pocket Mode turns with the device), read by **activity
   block** — `aapt2 dump xmltree` writes enum attributes as numbers, so landscape is `0`, portrait `1`
   and an undeclared orientation is no line at all; grepping the dump for the word "landscape" fails on

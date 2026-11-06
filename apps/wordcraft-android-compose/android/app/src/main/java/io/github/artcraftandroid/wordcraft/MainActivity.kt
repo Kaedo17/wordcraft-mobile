@@ -143,8 +143,7 @@ class MainActivity : ComponentActivity() {
                 // hand the next activity callbacks to a dropped state ("spurious JVM callback" — the
                 // front end never came back). Reordering resumes it, and the open document survives.
                 launchSafely {
-                    val desktop = Intent().setClassName(packageName, "android.app.NativeActivity").addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                    startActivity(desktop)
+                    startActivity(Intent(packageName, DesktopActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
                 }
             }
         }
@@ -165,7 +164,7 @@ class MainActivity : ComponentActivity() {
     private fun redirectDesktopLaunch(): Boolean {
         if (!vm.desktopInterfaceOn || intent?.data != null) return false
         launchSafely {
-            startActivity(Intent().setClassName(packageName, "android.app.NativeActivity").addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+            startActivity(Intent(packageName, DesktopActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
         }
         return true
     }
