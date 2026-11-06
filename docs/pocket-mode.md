@@ -4,10 +4,11 @@ Pocket Mode is WordCraft's phone/tablet presentation: the document reflowed to a
 instead of laid out as pages. It is a first-class view state (`view.pocketMode`), a switch in
 **View › Views**, and — on Android — the way the two front ends hand the session to each other.
 
-*Status: the engine, the layout mode, the switch and the bridge are implemented and tested; the
-Android hand-off runs on a phone, and the phone → desktop direction is verified there. Pocket Mode did
-not switch on the phone — JNI's class lookup could not see the app's own classes — and that is fixed;
-the fixed direction needs the rebuilt APK to confirm on device.*
+*Status: the engine, the layout mode, the switch and the bridge are implemented and tested. Both hand-off
+directions now run on a phone with the CI-built debug APK: phone → desktop, and Pocket Mode → phone,
+which previously posted nothing because JNI's class lookup could not see the app's own classes from
+egui's native thread. Returning to the desktop front end *after* Pocket Mode is a separate open limit
+(egui's event loop cannot be recreated in that process) — see "What is verified, and what is not".*
 
 ## What it does
 
@@ -98,7 +99,7 @@ the **phone → desktop** hand-off fires — `ActivityTaskManager` logged
 `START … cmp=io.github.artcraftandroid.wordcraft.debug/android.app.NativeActivity … flg=REORDER_TO_FRONT
 … result code=0` from ⋯ › Open Desktop Interface.
 
-**The other direction did not switch.** Tapping View › Views › Pocket Mode raised the soft keyboard and
+**The other direction had not switched.** Tapping View › Views › Pocket Mode raised the soft keyboard and
 left egui on screen; the app's own log recorded `android access: could not ask the phone app to switch
 front ends` five times in one minute, and no `startActivity` for `MainActivity` ever appeared. The cause
 was the class lookup, not the request: JNI's `FindClass` resolves through the *current thread's* loader,
@@ -109,12 +110,30 @@ grant worked by name; the phone app's Kotlin object is not. It is now loaded thr
 the `Application` object — a lookup that works on any thread — and a failed hand-off logs the Java
 exception that says why (`apps/wordcraft-android/src/android_access.rs`).
 
-Not verified yet: **the fixed hand-off on a device.** This machine cannot build the APK — it has NDK 29
-and 30 but no JDK 17–21, so `assembleDebug` cannot run here; the APK comes from GitHub Actions. Rebuilding
-it, installing it, and tapping Pocket Mode is the remaining verification. Installing a CI debug APK over
-the debug build already on the phone needs `adb uninstall` first (the debug keystores differ), which wipes
-both front ends' app-private storage, so it is the owner's call. `cargo xtask ci` and the pinned source
-check (`apps/wordcraft-android/src/lib.rs`) do cover the change itself.
+**The fixed hand-off is verified on that phone (2026-11-06, same device, run 42154378675's debug APK).**
+The CI debug keystore differs from the debug build already installed, so the install replaces it
+(`adb uninstall` first); app-private files and the two shared documents were copied off beforehand and
+restored afterwards. egui was started with `pocketMode: true` restored from `ui.json`, which dispatches
+the same `view.pocketMode` interception the ribbon switch uses (`crates/ui-egui/src/lib.rs:1132`), and
+logcat recorded `START … cmp=…/io.github.artcraftandroid.wordcraft.MainActivity … flg=0x20000
+(REORDER_TO_FRONT) … from uid 10292 (io.github.artcraftandroid.wordcraft.debug) … result code=3`:
+`MainActivity` became the focused window and the screen showed the phone editor. The app's log carried
+no `could not ask the phone app to switch front ends` line, which is what five taps recorded before the
+fix. The negative control holds too: with `pocketMode: false`, `NativeActivity` keeps the screen.
+
+The switch was driven through saved state, not the button: `adb`'s blind touch injection does not reach
+egui's scaled hit targets reliably (`uiScale` 175, and the soft keyboard resizes the window), so View ›
+Views › Pocket Mode could not be tapped from the shell. The saved-state path runs the identical
+interception and the identical JNI hand-off, so it proves the fix; tapping the ribbon by hand remains
+the unconfirmed part.
+
+**Still failing, and separate:** Pocket Mode destroys egui's activity once the phone front end takes the
+screen, so ⋯ › Open Desktop Interface afterwards starts `NativeActivity` but egui exits at once —
+`wordcraft exited with an error: winit EventLoopError: EventLoop can't be recreated` — and the phone
+editor stays. Returning *from* Pocket Mode in the same process needs its own fix: keep egui alive while
+pocket mode is on, or let the entry crate build a fresh event loop for a second `android_main`.
+`REORDER_TO_FRONT` (commit `e5195f65`) exists because a destroyed `NativeActivity` cannot be relaunched,
+so this is the same limitation seen from the other side.
 
 ## Testing
 
