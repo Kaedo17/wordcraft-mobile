@@ -523,8 +523,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var themeChoice by mutableStateOf(prefs.getString("theme", "system") ?: "system")
         private set
 
-    /** Documents open in Mobile View (else as pages). */
-    var startInMobileView by mutableStateOf(prefs.getBoolean("startMobileView", true))
+    /** Pocket Mode: documents open reflowed to a phone's column (else as pages), from Settings ›
+     * Display Preferences. The stored key stays `startMobileView`, so a choice saved before the
+     * rename still reads back. */
+    var pocketMode by mutableStateOf(prefs.getBoolean("startMobileView", true))
         private set
 
     /** Changes are saved to the document's own file as they are made. */
@@ -536,9 +538,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putString("theme", choice).apply()
     }
 
-    fun chooseStartInMobileView(on: Boolean) {
-        startInMobileView = on
+    fun choosePocketMode(on: Boolean) {
+        pocketMode = on
         prefs.edit().putBoolean("startMobileView", on).apply()
+    }
+
+    /**
+     * Settings › Display Preferences › Desktop Mode: open this APK's desktop-style front end. Android
+     * pins that activity to landscape (`AndroidManifest.xml` and `apps/wordcraft-android/Cargo.toml`),
+     * so it never shows a portrait screen; the phone front end still turns with the device. The
+     * request goes over the same channel the hand-off uses, because `NativeActivity` is not exported
+     * and nothing outside the APK can start it.
+     */
+    fun openDesktopInterface() {
+        desktopRequests.trySend(Unit)
+        closeSettings()
     }
 
     /** Display for Review: kept for every document from now on, as the reference keeps it. */
@@ -1148,7 +1162,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         editing = edit
         paletteOpen = false
         panels = emptyList()
-        viewMode = if (edit || !startInMobileView) ViewMode.Print else ViewMode.Mobile
+        viewMode = if (edit || !pocketMode) ViewMode.Print else ViewMode.Mobile
         if (viewMode == ViewMode.Mobile && mobileWidth > 0f) e.command { setView("mobile", mobileWidth) } else e.command { setView("print", 0f) }
         // the Display for Review chosen last, for this document too
         prefs.getString("markupView", null)?.takeIf { it != "allMarkup" }?.let { v ->

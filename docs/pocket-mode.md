@@ -2,9 +2,13 @@
 
 Pocket Mode is WordCraft's phone/tablet presentation: the document reflowed to a pocket's column
 instead of laid out as pages. It is a first-class view state (`view.pocketMode`), a switch in
-**View › Views**, and — on Android — the way the two front ends hand the session to each other.
+**View › Views** on the egui front end, a switch in **Settings › Display Preferences** on the phone
+front end, and — on Android — the way the two front ends hand the session to each other.
 
-*Status: the engine, the layout mode, the switch and the bridge are implemented and tested. Both hand-off
+*Status: the engine, the layout mode, the switch and the bridge are implemented and tested. On the phone the
+interface options sit in Settings › Display Preferences, and Desktop Mode is pinned to landscape
+(2026-11-06; the pins are checked against the packaged manifest by CI, and have not been re-run on a
+device). Both hand-off
 directions now run on a phone with the CI-built debug APK: phone → desktop, and Pocket Mode → phone,
 which previously posted nothing because JNI's class lookup could not see the app's own classes from
 egui's native thread. Returning to the desktop front end *after* Pocket Mode is a separate open limit
@@ -18,7 +22,7 @@ egui's native thread. Returning to the desktop front end *after* Pocket Mode is 
 | `crates/engine` | `view.pocketMode` (`{"value"?: bool}`) and `view.pocketWidth` (`{"value": points}`, 72–4000, default 360), with `mobile`/`pocket_width` kept in the view state |
 | `crates/ui-egui` | the toggle in View › Views, `pocketMode`/`pocketWidth` in `ui.json`, and the hand-off call |
 | `crates/android-bridge` | the UniFFI bridge the Compose app loads; `set_view("mobile", width)` drives the same commands |
-| `apps/wordcraft-android-compose` | the phone front end, packaged in the same APK as the egui one |
+| `apps/wordcraft-android-compose` | the phone front end, packaged in the same APK as the egui one; its **Settings › Display Preferences** holds Pocket Mode and Desktop Mode |
 
 The layout mode is **inert unless set**: with `mobile: false` the layout is byte-identical to a
 build without the feature, which `mobile_false_lays_out_exactly_as_today` in
@@ -56,12 +60,33 @@ The request is posted rather than started directly because egui runs on a **nati
 Android 14+ can silently drop an activity started from a background thread — the launch has to
 happen on the activity's main thread, which is the phone app's. Coming back out of Pocket Mode
 posts the same request with the egui activity as the target; the phone app also reaches egui on
-demand through **⋯ › Open Desktop Interface**, since `NativeActivity` is not exported and nothing
+demand through **Settings › Display Preferences › Desktop Mode** (the ⋯ › Open Desktop Interface row
+until 2026-11-06, over the same request channel), since `NativeActivity` is not exported and nothing
 outside the APK — not even adb — can start it.
 
 The document is made safe **before** anything is started, and a failed save **cancels** the switch
 with a status rather than proceeding: an edit lost to a half-finished switch is worse than a switch
 that did not happen.
+
+## The two interface options live in Settings › Display Preferences
+
+The phone app's Settings carries both interface options under **Display Preferences**, in order:
+**Theme**, **Pocket Mode** (documents open reflowed to the phone's column rather than as pages — it
+kept its stored `startMobileView` key, so a choice made before the move still reads back), and
+**Desktop Mode**, which opens this APK's desktop-style front end. General now holds only AutoSave,
+and the ⋯ sheet no longer offers the desktop front end: the option **moved**, it is not duplicated.
+
+Desktop Mode is **landscape only**. The `NativeActivity` it opens declares
+`android:screenOrientation="landscape"` in the Gradle manifest, and `apps/wordcraft-android` pins
+the same for the `cargo-apk` build (`orientation = "landscape"`), where that activity is the only
+one in the APK. Turning the phone portrait therefore never re-lays the desktop window out. The
+Compose activity keeps the sensor, so Pocket Mode still reads whichever way the phone is held. The
+Android workflow reads the **packaged** manifest and fails if either declaration is wrong.
+
+Two switches are not the same thing, and neither is hidden by this move: the desktop front end's
+own Pocket Mode switch stays in **View › Views** (Word parity on every front end with a ribbon, and
+the desktop app's File › Options › Display pane is unchanged), while the phone editor's bar button
+toggles Mobile View *inside* the phone front end — a presentation, not a front-end hand-off.
 
 ### Both front ends in one APK
 
@@ -74,7 +99,7 @@ libraries as generated jniLibs:
 | Activity | Class | Library | Role |
 |---|---|---|---|
 | Compose | `io.github.artcraftandroid.wordcraft.MainActivity` | `libwordcraft_android_bridge.so` | the launcher, the pocket front end |
-| egui | `android.app.NativeActivity` | `libwordcraft_android.so` | the desktop-style front end |
+| egui | `android.app.NativeActivity` | `libwordcraft_android.so` | the desktop-style front end, pinned to landscape |
 
 The phone app's main-thread loop targets these explicitly (`setClassName` with the running
 package, so the debug build's `applicationIdSuffix` resolves correctly), reaching nothing outside
@@ -97,9 +122,10 @@ Android libraries cross-compile for arm64 (`libwordcraft_android_bridge.so` and
 Verified on a phone (2026-11-06, POCO X6 Pro, Android 17/API 37, the CI debug APK): the app runs, and
 the **phone → desktop** hand-off fires — `ActivityTaskManager` logged
 `START … cmp=io.github.artcraftandroid.wordcraft.debug/android.app.NativeActivity … flg=REORDER_TO_FRONT
-… result code=0` from ⋯ › Open Desktop Interface.
+… result code=0` from ⋯ › Open Desktop Interface (that row is now Settings › Display Preferences ›
+Desktop Mode, the same request).
 
-**The other direction had not switched.** Tapping View › Views › Pocket Mode raised the soft keyboard and
+****The other direction had not switched.** Tapping View › Views › Pocket Mode raised the soft keyboard and
 left egui on screen; the app's own log recorded `android access: could not ask the phone app to switch
 front ends` five times in one minute, and no `startActivity` for `MainActivity` ever appeared. The cause
 was the class lookup, not the request: JNI's `FindClass` resolves through the *current thread's* loader,
@@ -128,7 +154,8 @@ interception and the identical JNI hand-off, so it proves the fix; tapping the r
 the unconfirmed part.
 
 **Still failing, and separate:** Pocket Mode destroys egui's activity once the phone front end takes the
-screen, so ⋯ › Open Desktop Interface afterwards starts `NativeActivity` but egui exits at once —
+screen, so Settings › Display Preferences › Desktop Mode afterwards starts `NativeActivity` but egui
+exits at once —
 `wordcraft exited with an error: winit EventLoopError: EventLoop can't be recreated` — and the phone
 editor stays. Returning *from* Pocket Mode in the same process needs its own fix: keep egui alive while
 pocket mode is on, or let the entry crate build a fresh event loop for a second `android_main`.
@@ -145,5 +172,7 @@ so this is the same limitation seen from the other side.
 - `crates/ui-egui/src/lib.rs`: the `ui.json` round trip with junk values.
 - `crates/android-bridge/src/tests.rs`: `mobile_view_reflows_to_the_width_and_print_brings_the_pages_back`
   and the rest of the ported suite (52 tests).
+- `.github/workflows/android.yml`: the packaged manifest pins `NativeActivity` to landscape (Desktop
+  Mode) and leaves `MainActivity` on the sensor (Pocket Mode turns with the device).
 - `apps/wordcraft-android/src/lib.rs`: `pocket_handoff_loads_the_class_with_the_apps_own_loader` pins the
   hand-off's class lookup, since JNI itself only runs on a device.

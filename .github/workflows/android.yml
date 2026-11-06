@@ -130,6 +130,18 @@ jobs:
             grep -q "$act" /tmp/manifest.txt || { echo "missing activity $act"; exit 1; }
             echo "ok: $act"
           done
+          # Desktop Mode is landscape only, and Pocket Mode still turns with the device: `awk` reads
+          # each activity's own attributes (the first screenOrientation after its name line), so the
+          # check is against the shipped manifest rather than the source file.
+          echo "--- Desktop Mode is landscape, Pocket Mode still turns"
+          # aapt2 dumps attributes as `A: android:screenOrientation(0x…)="landscape" (Raw: "landscape")`,
+          # so the match is on the attribute name, not on a literal `name="value"` spelling.
+          awk '/android:name.*android\.app\.NativeActivity/{f=1} f && /android:screenOrientation/{print; f=0}' /tmp/manifest.txt > /tmp/native-orientation.txt
+          grep -q 'landscape' /tmp/native-orientation.txt || { echo "the desktop front end is not pinned to landscape"; exit 1; }
+          echo "ok: NativeActivity pinned to landscape"
+          awk '/android:name.*\.MainActivity/{f=1} f && /android:screenOrientation/{print; f=0}' /tmp/manifest.txt > /tmp/main-orientation.txt
+          test -s /tmp/main-orientation.txt && { echo "MainActivity pins an orientation; Pocket Mode must follow the sensor"; exit 1; }
+          echo "ok: MainActivity follows the sensor"
           echo "--- launcher entry"
           grep -q 'android.intent.category.LAUNCHER' /tmp/manifest.txt || { echo "no launcher"; exit 1; }
 

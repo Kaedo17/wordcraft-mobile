@@ -83,7 +83,9 @@ icon = "@mipmap/ic_launcher"
 config_changes = "orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|layoutDirection|uiMode|fontScale|keyboard|navigation|touchscreen|locale|mcc|mnc|colorMode"
 label = "WordCraft"
 launch_mode = "singleTask"
-# A document is read and written both ways; the app rotates with the device (the other Craft
-# apps pin landscape, where the work is a timeline or canvas).
-orientation = "unspecified"
+# Desktop Mode is landscape only: this crate's activity is the desktop-style front end (Settings ›
+# Display Preferences › Desktop Mode opens it from the phone app), pinned to landscape like the
+# other Craft apps, where the work is a wide window. The phone front end in
+# `apps/wordcraft-android-compose` keeps the sensor so Pocket Mode reads in either way.
+orientation = "landscape"
 exported = true

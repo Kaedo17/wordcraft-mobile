@@ -128,12 +128,6 @@ fun OverflowSheet(vm: AppViewModel, visible: Boolean, onSaveAs: () -> Unit, modi
                         vm.dictationRequests.trySend(Unit)
                     }
                 }
-                // The desktop-style front end of this same APK (the egui app): its own session,
-                // which opens documents through its own browser; the phone hands off on Pocket Mode.
-                OverflowRow("Open Desktop Interface", LucideIcons.Monitor.glyph()) {
-                    close()
-                    vm.desktopRequests.trySend(Unit)
-                }
                 Box(Modifier.fillMaxWidth().height(1.dp).background(WordColors.Divider))
                 OverflowRow("Settings", LucideIcons.Settings.glyph()) {
                     close()
@@ -181,9 +175,9 @@ internal fun SmallSwitch(on: Boolean, modifier: Modifier = Modifier) {
 }
 
 /**
- * Settings: Display Preferences (the theme), General (how documents open, AutoSave) and About
- * (the version, what WordCraft is, the open material it ships with). Sections have accent titles;
- * an item is its title over its value, with lines between the sections.
+ * Settings: Display Preferences (the theme, Pocket Mode, Desktop Mode), General (AutoSave) and
+ * About (the version, what WordCraft is, the open material it ships with). Sections have accent
+ * titles; an item is its title over its value, with lines between the sections.
  */
 @Composable
 fun SettingsScreen(vm: AppViewModel, engineVersion: String) {
@@ -197,9 +191,15 @@ fun SettingsScreen(vm: AppViewModel, engineVersion: String) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             SettingsSection("Display Preferences")
             SettingsItem("Theme", THEMES[vm.themeChoice] ?: "System Default") { picking = true }
+            SettingsSwitch("Pocket Mode", "Reflow documents to a phone's column instead of pages", vm.pocketMode, vm::choosePocketMode)
+            // The desktop-style front end of this same APK (the egui app): its own session, which
+            // opens documents through its own browser. Android pins it to landscape, so it never
+            // shows a portrait screen; the phone front end still turns with the device.
+            SettingsItem("Desktop Mode", "Opens the desktop interface: landscape only, portrait is not available") {
+                vm.openDesktopInterface()
+            }
             SettingsLine()
             SettingsSection("General")
-            SettingsSwitch("Default View", "Start WordCraft in Mobile View", vm.startInMobileView, vm::chooseStartInMobileView)
             SettingsSwitch("AutoSave", "Automatically save files", vm.autoSaveOn, vm::chooseAutoSave)
             SettingsLine()
             SettingsSection("About")

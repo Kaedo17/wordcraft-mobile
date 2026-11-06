@@ -12,10 +12,12 @@ plan/
 # Private CARGO_HOME a build needs when ~/.cargo is read-only (seeded from the shared git db).
 /.cargo-home/
 
-# Scratch: the upstream fork clone and worktree the port was read from, and a workspace-local
-# Gradle home when ~/.gradle is not writable.
+# Scratch: the upstream fork clone and worktree the port was read from, a workspace-local Gradle
+# home when ~/.gradle is not writable, and a local restore folder of device screenshots (like
+# plan/, local only — never an asset, so `cargo xtask assets` must not see it).
 /.scratch/
 /.gradle-home/
+/.tmp-restore/
 
 # Gradle build outputs.
 .gradle/

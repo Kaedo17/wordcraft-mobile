@@ -1,6 +1,6 @@
 # WordCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (Pocket Mode: the mobile layout mode, `view.pocketMode`/`view.pocketWidth`, the Views-tab switch, `crates/android-bridge` and the Compose phone front end, and the hand-off between the two) · **Previously:** 2026-10-26 · **Change:** minor (Android: input — the vendored winit's mouse path, the stamped keyboard modifiers and the canvas's touch arbiter (a finger pans the page, a still hold is the long-press menu, a tap places the caret); previously minor: Android: the entry crate's JNI offers shared storage as the browser's second root; previously minor: host-provided storage serves every file command in the built-in browser) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-06 · **Change:** trivial (Pocket Mode's phone options move to Settings › Display Preferences, and Desktop Mode's front end is pinned to landscape; previously minor (Pocket Mode: the mobile layout mode, `view.pocketMode`/`view.pocketWidth`, the Views-tab switch, `crates/android-bridge` and the Compose phone front end, and the hand-off between the two)) · **Previously:** 2026-10-26 · **Change:** minor (Android: input — the vendored winit's mouse path, the stamped keyboard modifiers and the canvas's touch arbiter (a finger pans the page, a still hold is the long-press menu, a tap places the caret); previously minor: Android: the entry crate's JNI offers shared storage as the browser's second root; previously minor: host-provided storage serves every file command in the built-in browser) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 How WordCraft is built today (origin/main `40c5d51`). The longer design notes in
 `plan/architecture.md` are gitignored and local to the original author's machine; this file is the
@@ -51,7 +51,8 @@ storage it resolves hands the shared library its settings folder.
 ## Pocket Mode and the two phone front ends
 
 Pocket Mode is the phone/tablet presentation: the document reflowed to a pocket's column instead of
-laid out as pages. It is one view state, `view.pocketMode` (View › Views), with the column's width in
+laid out as pages. It is one view state, `view.pocketMode` — View › Views on the egui front end, Settings
+› Display Preferences on the phone one — with the column's width in
 `view.pocketWidth`; [`crates/layout`](../crates/layout/src/lib.rs)'s `LayoutOptions::mobile` does the
 reflow, and it is inert unless the flag is set. Its own doc is
 [pocket-mode.md](pocket-mode.md).
@@ -60,8 +61,8 @@ WordCraft ships **two front ends for phones**, and Pocket Mode is also the switc
 
 | Front end | UI toolkit | Library | Role |
 |---|---|---|---|
-| This repository's egui app | egui/eframe over winit | `libwordcraft_android.so` (the `wordcraft-android` `cdylib`) | the launcher; the same UI as the desktop |
-| `apps/wordcraft-android-compose` | Kotlin/Jetpack Compose | `libwordcraft_android_bridge.so` (`crates/android-bridge`) | the pocket UI |
+| This repository's egui app | egui/eframe over winit | `libwordcraft_android.so` (the `wordcraft-android` `cdylib`) | the launcher; the same UI as the desktop; pinned to landscape (Desktop Mode) |
+| `apps/wordcraft-android-compose` | Kotlin/Jetpack Compose | `libwordcraft_android_bridge.so` (`crates/android-bridge`) | the pocket UI, following the phone's sensor |
 
 Both are the *same engine*: the Compose app edits through `android-bridge`, whose every method is a
 command run by id, so undo, the never-crash guard and AutoCorrect behave as they do on the desktop.
@@ -75,7 +76,11 @@ document safe (saving it, or writing the recovery copy when it has never been sa
 other activity with an explicit intent, and that one re-opens the document. A failed save cancels
 the switch rather than risking an edit. `cargo-apk`, which the egui side alone would use, supports a
 single `<activity>`, so the **Gradle** project packages both activities and both Rust libraries in
-one APK.
+one APK. Desktop Mode — Settings › Display Preferences, in the phone front end — opens the egui side
+and is **landscape only**: that activity declares `android:screenOrientation="landscape"`, and
+`apps/wordcraft-android` pins `orientation = "landscape"` for the `cargo-apk` build. The Compose
+activity keeps the sensor, so Pocket Mode still turns with the device; the Android workflow checks
+both declarations in the packaged manifest.
 
 ## Data flow
 
