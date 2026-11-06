@@ -43,3 +43,29 @@ pub fn android_main(app: android_activity::AndroidApp) {
         log::error!("wordcraft exited with an error: {e}");
     }
 }
+
+/// Pocket Mode's hand-off must reach the phone app's Kotlin object through the loader that actually
+/// holds this APK's classes. Asking for a JNI call by class *name* makes JNI run `FindClass`, which
+/// resolves through the *current thread's* loader; `android_main` runs on a native thread that
+/// android-activity spawns from native code, with no Java frame on its stack, so that loader is
+/// Android's system loader and never holds this APK's classes. Asked by name the request posted
+/// nothing: the phone logged `could not ask the phone app to switch front ends` five times while
+/// Pocket Mode did nothing but raise the keyboard (2026-11-06). JNI only runs on a device, so this
+/// pins the source instead, the way `third_party/winit/tests/ime_patches.rs` pins the vendored
+/// patches.
+#[test]
+fn pocket_handoff_loads_the_class_with_the_apps_own_loader() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/android_access.rs");
+    let src = std::fs::read_to_string(&path).unwrap();
+    // The hand-off entry point is the last function in the file, so this is its body and helpers.
+    let hand_off = src.split("pub fn start_other_front_end").nth(1).unwrap();
+    assert!(hand_off.contains("getApplication"), "the loader is read off the running app");
+    assert!(hand_off.contains("getClassLoader"), "the app's own loader must be asked for");
+    assert!(hand_off.contains("loadClass"), "and the class loaded through it");
+    assert!(hand_off.contains("call_static_method(&handoff"), "the request goes to the loaded class, not a name");
+    assert!(hand_off.contains("requestPocket"), "the phone app's hand-off object is still the target");
+    assert!(
+        !hand_off.contains("io/github/artcraftandroid/wordcraft/FrontEndHandoff"),
+        "the hand-off must not ask JNI's FindClass for a class of this APK: this thread's loader cannot see it"
+    );
+}

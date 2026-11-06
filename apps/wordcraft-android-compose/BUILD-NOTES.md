@@ -42,14 +42,18 @@ Verified on the development machine (2026-11-05):
 - `cargo xtask assets` passes with every icon attributed, and `cargo xtask layers` accepts both new
   crates.
 
-**Not yet verified: a full APK build.** Gradle configures the project, but `:app:assembleDebug`
-cannot finish on the development machine for two environment reasons, neither of them a defect in
-this tree:
+**The APK is built by CI, not by this machine.** Gradle configures the project, and the pinned
+NDK (`29.0.14206865`, installed locally by `sdkmanager`) lets the cargo task reach the linker,
+but `:app:assembleDebug` still cannot finish here for one environment reason, not a defect in
+this tree: the only Java present is the OpenJDK **25 JRE** (`/usr/lib/jvm/java-25-openjdk`, no
+`javac`), and AGP needs a JDK 17–21 for `compileDebugJavaWithJavac` ("does not provide the
+required capabilities: [JAVA_COMPILER]"). The build targets Java 17 bytecode.
 
-1. The build pins `ndkVersion = "29.0.14206865"`; the machine has NDK `30.0.16248370`, so Gradle
-   reports "NDK is not installed" before the cargo task can run.
-2. The only JDK present is 25, and AGP refuses it for `compileDebugJavaWithJavac` ("Toolchain
-   installation '/usr/lib/jvm/java-25-openjdk' does not provide the required capabilities:
-   [JAVA_COMPILER]"). The build targets Java 17 bytecode.
-
-Install NDK 29.0.14206865 and a JDK 17–21 to build the APK.
+So the APK ships from the GitHub Actions workflow (`.github/workflows/android.yml`), which
+installs JDK 17, NDK 29.0.14206865 and cargo-ndk 4.1.2, builds both libraries with
+`cargo ndk`, assembles with `-Pwordcraft.abis=arm64-v8a`, checks both `.so` files and both
+activities in the packaged manifest, and uploads the `wordcraft-apk` artifact. That artifact has
+been installed and run on a phone (POCO X6 Pro, Android 17/API 37) — see
+[`docs/pocket-mode.md`](../docs/pocket-mode.md) for what the device run verified. Installing a
+CI debug APK over a locally-signed one needs `adb uninstall` first (the debug keystores differ),
+and that uninstall wipes both front ends' app-private storage.

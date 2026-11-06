@@ -20,7 +20,7 @@
 //! module holds the pointers, never lets them leave, and hands [`wordcraft::SharedStorageAccess`]
 //! plain closures, so the shared app crates stay unsafe-free.
 
-use jni::objects::{JObject, JValue};
+use jni::objects::{JClass, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
 
 /// The pocket front end's activity class, as the Gradle manifest declares it. The debug build's
@@ -29,6 +29,10 @@ use jni::{JNIEnv, JavaVM};
 const COMPOSE_ACTIVITY: &str = "io.github.artcraftandroid.wordcraft.MainActivity";
 /// This front end's activity, as the manifest declares it (`android:name="android.app.NativeActivity"`).
 const EGUI_ACTIVITY: &str = "android.app.NativeActivity";
+/// The phone app's hand-off object, as a **binary** class name — the spelling `ClassLoader.loadClass`
+/// takes. JNI's own name form (`io/github/...`) is the one `FindClass` wants, and that lookup never
+/// finds this class here: see `start_other_front_end`.
+const COMPOSE_HANDOFF: &str = "io.github.artcraftandroid.wordcraft.FrontEndHandoff";
 
 /// The activity's JVM and activity reference, captured before the `AndroidApp` moves into
 /// eframe. The activity owns both and lives as long as the app, so every later call is valid.
@@ -188,29 +192,96 @@ impl AndroidAccess {
     /// This call runs on egui's native thread, where Android (14+) can silently drop an activity
     /// started from a background thread, so the request is posted to the phone app's Kotlin object
     /// (`FrontEndHandoff.requestPocket`) and its main-thread loop performs the `startActivity` —
-    /// with an explicit in-app intent and `FLAG_ACTIVITY_CLEAR_TOP`, keeping one instance of each
-    /// front end and reaching nothing outside this APK.
+    /// with an explicit in-app intent and `FLAG_ACTIVITY_REORDER_TO_FRONT`, which brings the other
+    /// front end back rather than destroying it (a destroyed `NativeActivity` cannot be relaunched),
+    /// and reaches nothing outside this APK.
     ///
-    /// Best effort, like the storage grant: an unreachable JVM or a missing phone app logs and
-    /// returns `false`, and the caller reports that the switch did not happen rather than
-    /// pretending it did.
+    /// The object is loaded through **the app's own class loader**, never asked for by name. JNI's
+    /// `FindClass` — what `call_static_method` does when handed a class *name* — resolves through
+    /// the current thread's loader, and with no Java frame on the stack that is Android's *system*
+    /// loader, which never holds this APK's classes. `android_main` runs on exactly such a thread:
+    /// android-activity spawns it from native code, and its own glue says what that costs
+    /// (`native_activity/glue.rs`: "difficult for native code to look up non-standard Java
+    /// classes"). Framework classes live in the system loader, so the storage grant above is fine
+    /// asked by name; the phone app's Kotlin object does not, and asking for it that way posted
+    /// nothing — the phone's log recorded `could not ask the phone app to switch front ends` five
+    /// times while Pocket Mode did nothing but raise the keyboard. Reading the loader off the
+    /// `Application` object, as `runtime_package` reads the package, works on any thread, so the
+    /// request lands.
+    ///
+    /// Best effort, like the storage grant: an unreachable JVM, a class that won't load or a method
+    /// that isn't there logs what failed and returns `false`, and the caller reports that the switch
+    /// did not happen rather than pretending it did.
     pub fn start_other_front_end(self, pocket: bool) -> bool {
         let target = if pocket { COMPOSE_ACTIVITY } else { EGUI_ACTIVITY };
-        let started = self.with_env(|env| -> jni::errors::Result<bool> {
-            env.call_static_method(
-                "io/github/artcraftandroid/wordcraft/FrontEndHandoff",
-                "requestPocket",
-                "(Z)V",
-                &[JValue::Bool(pocket as jni::sys::jboolean)],
-            )?;
-            Self::started(env)
+        let posted = self.with_env(|env| -> jni::errors::Result<(bool, String)> {
+            let act = self.activity();
+            match post_handoff(env, &act, pocket) {
+                // `started` reports whether Java left anything pending: a pending exception here
+                // means the post did not land, and it is cleared before anything else is called.
+                Ok(()) => Ok(match Self::started(env) {
+                    Ok(true) => (true, String::new()),
+                    Ok(false) => (false, "the phone app refused the request".into()),
+                    Err(why) => (false, format!("checking the request: {why}")),
+                }),
+                Err(why) => Ok((false, failure_note(env, &why))),
+            }
         });
-        match started {
-            Some(true) => true,
-            _ => {
-                log::warn!("android access: could not ask the phone app to switch front ends ({target} stayed behind)");
+        match posted {
+            Some((true, _)) => true,
+            Some((false, why)) => {
+                log::warn!("android access: could not ask the phone app to switch front ends ({why}; {target} stayed behind)");
+                false
+            }
+            None => {
+                log::warn!("android access: no JVM on the activity; {target} stayed behind");
                 false
             }
         }
     }
+}
+
+/// Post Pocket Mode's switch request to the phone app's Kotlin object.
+///
+/// `ClassLoader.loadClass` is called on the loader read off the `Application` object, because that
+/// loader is the one holding this APK's classes; see `AndroidAccess::start_other_front_end` for why
+/// asking JNI by class name cannot find them from this thread. Every step can fail, and the error is
+/// returned for the caller to log — never a panic, which this module's lints deny too.
+fn post_handoff(env: &mut JNIEnv, act: &JObject, pocket: bool) -> jni::errors::Result<()> {
+    let app = env.call_method(act, "getApplication", "()Landroid/app/Application;", &[])?.l()?;
+    let app_class = env.get_object_class(&app)?;
+    let loader = env.call_method(&app_class, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+    let handoff_name = env.new_string(COMPOSE_HANDOFF)?;
+    let handoff: JClass =
+        env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(&handoff_name)])?.l()?.into();
+    env.call_static_method(&handoff, "requestPocket", "(Z)V", &[JValue::Bool(pocket as jni::sys::jboolean)])?;
+    Ok(())
+}
+
+/// Why a hand-off call failed, for the log line: the pending Java exception's class and message —
+/// which is what names a class the loader can't find, since JNI reports that as a bare
+/// `JavaException` — or the Rust-side error when nothing was pending. A throwable can only be read
+/// once the pending exception is cleared, so this clears it first: leaving one pending would make the
+/// JVM rethrow it into unrelated code later.
+fn failure_note(env: &mut JNIEnv, why: &jni::errors::Error) -> String {
+    let Ok(thrown) = env.exception_occurred() else { return format!("{why}") };
+    env.exception_clear().ok();
+    let class_name = env.get_object_class(&thrown).ok().and_then(|c| java_string(env, c, "getName"));
+    let message = java_string(env, &thrown, "getMessage");
+    match (class_name, message) {
+        (Some(class), Some(message)) => format!("{class}: {message}"),
+        (Some(class), None) => class,
+        (None, Some(message)) => message,
+        (None, None) => format!("{why}"),
+    }
+}
+
+/// Read a Java method that returns a String, `None` when the call fails or returns null.
+fn java_string<'other_local, O>(env: &mut JNIEnv, obj: O, method: &str) -> Option<String>
+where
+    O: AsRef<JObject<'other_local>>,
+{
+    let value = env.call_method(obj, method, "()Ljava/lang/String;", &[]).ok()?;
+    let s: JString = value.l().ok()?.into();
+    env.get_string(&s).ok().map(String::from)
 }

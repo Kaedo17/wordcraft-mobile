@@ -5,7 +5,9 @@ instead of laid out as pages. It is a first-class view state (`view.pocketMode`)
 **View › Views**, and — on Android — the way the two front ends hand the session to each other.
 
 *Status: the engine, the layout mode, the switch and the bridge are implemented and tested; the
-Android hand-off is implemented and cross-compiles, with on-device verification outstanding.*
+Android hand-off runs on a phone, and the phone → desktop direction is verified there. Pocket Mode did
+not switch on the phone — JNI's class lookup could not see the app's own classes — and that is fixed;
+the fixed direction needs the rebuilt APK to confirm on device.*
 
 ## What it does
 
@@ -41,9 +43,20 @@ starts the other activity, and that one re-opens the document.
 View › Views › Pocket Mode
   → view.pocketMode {value:true}
   → the app saves the document (or writes the recovery copy when it has never been saved)
-  → startActivity(the other front end's activity, FLAG_ACTIVITY_CLEAR_TOP)
+  → egui's native thread posts the request to the phone app over JNI: load
+    io.github.artcraftandroid.wordcraft.FrontEndHandoff with **the app's own class loader**
+    (read off the Application object), then call its static requestPocket(pocket)
+  → the phone app drains it on its main thread: startActivity(the other front end's activity,
+    FLAG_ACTIVITY_REORDER_TO_FRONT)
   → the other front end re-opens the document and shows the pocket view
 ```
+
+The request is posted rather than started directly because egui runs on a **native thread**, and
+Android 14+ can silently drop an activity started from a background thread — the launch has to
+happen on the activity's main thread, which is the phone app's. Coming back out of Pocket Mode
+posts the same request with the egui activity as the target; the phone app also reaches egui on
+demand through **⋯ › Open Desktop Interface**, since `NativeActivity` is not exported and nothing
+outside the APK — not even adb — can start it.
 
 The document is made safe **before** anything is started, and a failed save **cancels** the switch
 with a status rather than proceeding: an edit lost to a half-finished switch is worse than a switch
@@ -62,7 +75,9 @@ libraries as generated jniLibs:
 | Compose | `io.github.artcraftandroid.wordcraft.MainActivity` | `libwordcraft_android_bridge.so` | the launcher, the pocket front end |
 | egui | `android.app.NativeActivity` | `libwordcraft_android.so` | the desktop-style front end |
 
-The hand-off targets these explicitly (`setClassName`), so nothing outside the APK can be reached.
+The phone app's main-thread loop targets these explicitly (`setClassName` with the running
+package, so the debug build's `applicationIdSuffix` resolves correctly), reaching nothing outside
+the APK.
 
 ## On the desktop and the web
 
@@ -78,11 +93,28 @@ the 52-test bridge suite, `cargo xtask layers` (23 crates) and `cargo xtask asse
 Android libraries cross-compile for arm64 (`libwordcraft_android_bridge.so` and
 `libwordcraft_android.so`, the latter with `android_main` exported).
 
-Not verified here: **a full APK build and an on-device run of the hand-off.** The Gradle project
-configures, but the build needs NDK 29 (this machine has 30) and a JDK 17–21 (it has 25); and the
-heavier Rust links (`ui_shot`, the engine test binary) exceed this shared machine's free memory, so
-the headless screenshot comparison is outstanding too. The APK is the next thing to run where that
-toolchain and memory exist; `apps/wordcraft-android-compose/BUILD-NOTES.md` states the same.
+Verified on a phone (2026-11-06, POCO X6 Pro, Android 17/API 37, the CI debug APK): the app runs, and
+the **phone → desktop** hand-off fires — `ActivityTaskManager` logged
+`START … cmp=io.github.artcraftandroid.wordcraft.debug/android.app.NativeActivity … flg=REORDER_TO_FRONT
+… result code=0` from ⋯ › Open Desktop Interface.
+
+**The other direction did not switch.** Tapping View › Views › Pocket Mode raised the soft keyboard and
+left egui on screen; the app's own log recorded `android access: could not ask the phone app to switch
+front ends` five times in one minute, and no `startActivity` for `MainActivity` ever appeared. The cause
+was the class lookup, not the request: JNI's `FindClass` resolves through the *current thread's* loader,
+and `android_main` runs on a native thread android-activity spawns with no Java frame on the stack, so
+that loader is Android's system loader, which never holds this APK's classes. Framework classes
+(`android/os/Environment`, `android/content/Intent`) are in the system loader, which is why the storage
+grant worked by name; the phone app's Kotlin object is not. It is now loaded through the loader read off
+the `Application` object — a lookup that works on any thread — and a failed hand-off logs the Java
+exception that says why (`apps/wordcraft-android/src/android_access.rs`).
+
+Not verified yet: **the fixed hand-off on a device.** This machine cannot build the APK — it has NDK 29
+and 30 but no JDK 17–21, so `assembleDebug` cannot run here; the APK comes from GitHub Actions. Rebuilding
+it, installing it, and tapping Pocket Mode is the remaining verification. Installing a CI debug APK over
+the debug build already on the phone needs `adb uninstall` first (the debug keystores differ), which wipes
+both front ends' app-private storage, so it is the owner's call. `cargo xtask ci` and the pinned source
+check (`apps/wordcraft-android/src/lib.rs`) do cover the change itself.
 
 ## Testing
 
@@ -94,3 +126,5 @@ toolchain and memory exist; `apps/wordcraft-android-compose/BUILD-NOTES.md` stat
 - `crates/ui-egui/src/lib.rs`: the `ui.json` round trip with junk values.
 - `crates/android-bridge/src/tests.rs`: `mobile_view_reflows_to_the_width_and_print_brings_the_pages_back`
   and the rest of the ported suite (52 tests).
+- `apps/wordcraft-android/src/lib.rs`: `pocket_handoff_loads_the_class_with_the_apps_own_loader` pins the
+  hand-off's class lookup, since JNI itself only runs on a device.

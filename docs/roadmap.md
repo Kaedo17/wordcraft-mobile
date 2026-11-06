@@ -75,6 +75,7 @@ languages, screen-reader access, ecosystem decisions (VBA, add-ins, cloud), an i
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-06 | trivial | Pocket Mode did not switch on the phone: JNI asked for the phone app's Kotlin object by class name, and on egui's native thread that lookup goes through Android's system loader, which never holds this APK's classes. The request is now posted through the loader read off the `Application` object, and a failed hand-off logs the Java exception that says why. Phone → desktop verified on device; the fixed direction needs the CI-built APK |
 | 2026-10-26 | minor | M17: the Android arm64 port lands as stacked part-PRs (entry, storage, browser, vendored winit, touch arbiter, 50% scale; Tab S11-verified) |
 | 2026-10-25 | trivial | egui 0.37 migration: 27 interface languages remain pinned by `craft-i18n.rev` (9205108…); input-method surrounding-delete and commit handling has synthetic regressions only, with managed CI passing; native acceptance (#155–#164) and native-speaker review remain open |
 | 2026-10-18 | trivial | M6: Manage Sources imports Word's `Sources.xml` (#2640) |
