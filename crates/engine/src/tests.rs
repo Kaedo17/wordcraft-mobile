@@ -10857,10 +10857,13 @@ fn ime_body_epoch_marks_body_replacements_not_edits() {
     run(&mut s, "text.insert", json!({"text": " two"}));
     assert_eq!(s.ime_body_epoch(), first, "typing is not a replacement");
 
+    let id_before = s.document_id();
     run(&mut s, "document.setText", json!({"text": "same text"}));
     let replaced = s.ime_body_epoch();
     assert!(replaced > first, "setText replaces the body under the same document id");
-    assert_eq!(s.document_id(), 1, "the document id itself is unchanged");
+    // Document ids come from a process-wide counter, so in a full run this session's document is
+    // not necessarily number 1; what the epoch promise needs is that the id survives a replacement.
+    assert_eq!(s.document_id(), id_before, "the document id itself is unchanged");
 
     // The same text again still replaces the body: a composition must not survive on content
     // equality.
