@@ -120,10 +120,9 @@ jobs:
       - name: WASM still builds
         run: cargo xtask wasm
 
-      - name: Cross-check for arm64 Android
-        env:
-          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
-        run: cargo check -p wordcraft -p wordcraft-android --target aarch64-linux-android
+      # The arm64 cross-check runs in the apk job, where the NDK is installed: a build for
+      # aarch64-linux-android compiles C dependencies with the NDK's clang, which a plain runner
+      # without the NDK cannot find.
 
   apk:
     name: Signed release APK (arm64)
@@ -197,6 +196,20 @@ jobs:
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/wordcraft-release.jks"
           echo "CARGO_APK_RELEASE_KEYSTORE=$RUNNER_TEMP/wordcraft-release.jks" >> "$GITHUB_ENV"
           echo "CARGO_APK_RELEASE_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Cross-check for arm64 Android
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          TOOLS="$ANDROID_HOME/ndk/$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # The NDK's clang and ar build the C dependencies for this target. NDK r29 ships only
+          # versioned wrappers (aarch64-linux-android<api>-clang, min SDK 28 here) and no bare
+          # aarch64-linux-android-clang or -ar, so cc-rs needs both tools named explicitly.
+          export CC_aarch64_linux_android="$TOOLS/aarch64-linux-android28-clang"
+          export AR_aarch64_linux_android="$TOOLS/llvm-ar"
+          cargo check -p wordcraft -p wordcraft-android --target aarch64-linux-android
 
       - name: Build the release APK
         env:
