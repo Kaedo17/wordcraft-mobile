@@ -59,6 +59,10 @@ jobs:
     name: Gates (fmt, clippy, tests, layers, assets, wasm, arm64 check)
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # The reviewed fonts, so metric-driven tests (pagination, font substitution) measure against
+    # the same font set a release build embeds — the same input ci.yml's shared gate supplies.
+    env:
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
     steps:
       - uses: actions/checkout@v4
 
@@ -76,6 +80,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: android-gates
+
+      # egui_kittest drives its UI harness through wgpu, which needs a Vulkan device; a hosted
+      # runner has no GPU, so the software driver stands in. Same install ci.yml's shared gate uses.
+      - name: System packages for the UI harness
+        uses: storytold/craft-common-actions/actions/install-apt-packages@main
+        with:
+          packages: libgtk-3-dev libfontconfig1-dev libfreetype-dev libvulkan1 mesa-vulkan-drivers
 
       - name: Formatting
         run: cargo fmt --all -- --check
