@@ -157,7 +157,8 @@ jobs:
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
           # The asset is named from Cargo.toml's version, so a tag suffix does not repeat inside it.
-          echo "APK_NAME=wordcraft-v$base-android-$RUST_ABI.apk" >> "$GITHUB_ENV"
+          # The asset name the Release publishes; RUST_ABI stays as the ABI check inside the APK.
+          echo "APK_NAME=wordcraft-v$base-android-arm64.apk" >> "$GITHUB_ENV"
 
       - name: Check out craft-fonts
         uses: actions/checkout@v4
