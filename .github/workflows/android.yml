@@ -69,6 +69,16 @@ jobs:
         with:
           ref: ${{ env.CRAFT_FONTS_REF }}
 
+      # gate.yml exports the fonts input itself (the checkout action alone doesn't), and a build
+      # that silently drops its fonts must fail here as it would in a release.
+      - name: Export the craft-fonts build input
+        shell: bash
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        run: |
+          echo "CRAFT_FONTS_DIR=$CRAFT_FONTS_DIR" >> "$GITHUB_ENV"
+          echo "CRAFT_FONTS_REQUIRED=1" >> "$GITHUB_ENV"
+
       - name: Check out craft-i18n
         uses: storytold/craft-common-actions/actions/checkout-craft-i18n@main
 
