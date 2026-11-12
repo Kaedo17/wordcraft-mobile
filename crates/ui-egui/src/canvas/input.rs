@@ -97,6 +97,30 @@ pub(super) fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[
     let Some(pointer) = route_pointer_targets(app, ui, resp, rects, layout, scale) else {
         return;
     };
+    // Android: arbitrate a finger press on the page (`touch`): a moving finger pans — its delta
+    // goes to the canvas's own scroll before the pass, in `show` — and a still hold belongs to
+    // egui's long-press, whose synthesized secondary click the menu paths in `show` answer. A
+    // mouse press is never arbitrated, so the desktop keeps every drag it has. Read Mode is
+    // excluded: it snaps the view every frame. A press on a comment balloon is the balloon's.
+    if !app.session.view.read_mode && !over_balloon(app, pointer) {
+        match super::touch::gesture(ui, resp) {
+            super::touch::Gesture::Panning => {
+                app.canvas.dragging = false;
+                app.canvas.unit_drag = None;
+                app.canvas.column_drag = None;
+                return;
+            }
+            // The menu's frame drops the drag state (a move under the open menu must not
+            // select); the press's undecided frames fall through, so the tap's release (the
+            // format painter's paste on mouse-up) still finds `dragging` set.
+            super::touch::Gesture::Menu => {
+                app.canvas.dragging = false;
+                app.canvas.unit_drag = None;
+                app.canvas.column_drag = None;
+            }
+            super::touch::Gesture::Pressing | super::touch::Gesture::None => {}
+        }
+    }
     // While drag-selecting, the pointer may sit past the viewport's edge (or the window's):
     // hit-test where it would be inside the view, so as the edge auto-scroll moves the content the
     // selection keeps growing under a stationary pointer (#688).
@@ -179,7 +203,9 @@ fn handle_page_pointer(app: &mut WordApp, pointer: PagePointer<'_>) {
             return;
         }
     } else if app.canvas.dragging
-        && ui.input(|i| i.pointer.primary_down())
+        // A touch drag pans the page (the arbiter's verdict), it doesn't drag-select: egui
+        // synthesizes drags from touch moves, so caret drags are mouse-only.
+        && ui.input(|i| i.pointer.primary_down() && !i.any_touches())
         && let Some((from, last)) = app.canvas.column_drag
     {
         if last != (page, x, y) {
@@ -191,7 +217,9 @@ fn handle_page_pointer(app: &mut WordApp, pointer: PagePointer<'_>) {
             );
         }
     } else if app.canvas.dragging
-        && ui.input(|i| i.pointer.primary_down())
+        // A touch drag pans the page (the arbiter's verdict), it doesn't drag-select: egui
+        // synthesizes drags from touch moves, so caret drags are mouse-only.
+        && ui.input(|i| i.pointer.primary_down() && !i.any_touches())
         && let Some(d) = app.canvas.unit_drag.as_mut()
     {
         // Lines grow line by line wherever the pointer is across; the whole document can't grow.
@@ -209,7 +237,11 @@ fn handle_page_pointer(app: &mut WordApp, pointer: PagePointer<'_>) {
             app.session.page_hint = page;
             app.canvas.caret_visible_since = crate::now_ms();
         }
-    } else if app.canvas.dragging && ui.input(|i| i.pointer.primary_down()) {
+    } else if app.canvas.dragging
+        // A touch drag pans the page (the arbiter's verdict), it doesn't drag-select: egui
+        // synthesizes drags from touch moves, so caret drags are mouse-only.
+        && ui.input(|i| i.pointer.primary_down() && !i.any_touches())
+    {
         // Through the command, so from one table cell into another the drag takes whole cells
         // (Word); straight to the session, as the app's `run` would scroll on every frame.
         if let Some(pos) = layout.hit(page, x, y, story)
@@ -362,6 +394,9 @@ fn handle_primary_press(
         let (start, end) = app.session.sel.ordered();
         app.canvas.unit_drag = Some(UnitDrag { unit, clicks, start, end, last: pos });
     }
+    // A touch double-tap (or triple) made the selection: its handles show. A tap or a
+    // mouse press puts them away.
+    app.canvas.touch_sel = clicks > 1 && super::touch_pass(ui);
     app.session.page_hint = page;
     app.canvas.dragging = true;
     // Format painter applies on mouse up
@@ -385,16 +420,14 @@ fn pointer_story(app: &WordApp, layout: &DocLayout, page: usize, x: f32, y: f32,
 }
 
 fn handle_completed_click(app: &mut WordApp, pointer: &PagePointer<'_>) -> bool {
-    let PagePointer { resp, layout, page, x, y, story, .. } = *pointer;
-    // The press already selected the word or paragraph (and a drag may have grown it).
-    let released_clicks = if resp.triple_clicked() {
-        3
-    } else if resp.double_clicked() {
-        2
-    } else {
-        0
-    };
-    if released_clicks > 0 && app.canvas.unit_drag.as_ref().is_some_and(|d| d.clicks == released_clicks) {
+    let PagePointer { ui, resp, layout, page, x, y, story, .. } = *pointer;
+    // The press already selected the word or paragraph (and a drag may have grown it). The
+    // count is the app's own (position-aware) one, not egui's: egui's triple check looks
+    // only at the time between the last two clicks, so a tap somewhere else just before a
+    // double-tap reads as a triple and would select a paragraph. Single-click releases (the
+    // format painter's paste, the drag cleanup) stay with the release path below.
+    let released_clicks = if ui.input(|i| i.pointer.any_click()) { app.canvas.last_press.map_or(0, |(_, _, n)| n) } else { 0 };
+    if released_clicks > 1 && app.canvas.unit_drag.as_ref().is_some_and(|d| d.clicks == released_clicks) {
         app.canvas.unit_drag = None;
         app.canvas.dragging = false;
         // Double-clicking a word (or triple-clicking a paragraph) with the Format Painter armed
@@ -442,10 +475,17 @@ fn handle_completed_click(app: &mut WordApp, pointer: &PagePointer<'_>) -> bool 
             return true;
         }
         let _ = app.run("select.word", json!({}));
+        // A touch double-tap whose press and release shared a pass lands here — the press
+        // block never saw the second press — so the selection's handles arm on release. A
+        // mouse double-click keeps desktop behaviour: no handles.
+        app.canvas.touch_sel = super::touch_pass(ui);
+        app.canvas.dragging = false;
         return true;
     }
     if resp.triple_clicked() {
         let _ = app.run("select.paragraph", json!({"cell": true}));
+        app.canvas.touch_sel = super::touch_pass(ui);
+        app.canvas.dragging = false;
         return true;
     }
     false

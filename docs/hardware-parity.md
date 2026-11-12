@@ -1,6 +1,6 @@
 # Hardware parity with Microsoft Word
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-07 · **Change:** trivial (newly opened window dimensions are constrained to fit available screen dimensions, #5871); previously trivial (print helpers erase loaded plaintext inputs before driver work, #5710); previously trivial (Windows print submissions use isolated helpers so a cancelled driver cannot block a retry, #5710); previously trivial (print cancellation remains available without a document; sending-boundary limitation clarified, #5710); previously trivial (a print job waiting on its driver can be cancelled, and quitting doesn't wait for it, #5710); previously trivial (the printer list no longer waits on printer drivers, #5710); previously trivial (Linux Read Aloud: a sentence a screen reader cuts off is said again); previously trivial (ink page lookup work, #3614); previously trivial (only the PDF sent to the printer has no link annotations; Save these pages as PDF keeps them, #4734); previously trivial (a document with links prints: the print job's PDF has no link annotations, #4734; previously trivial: Pen / stylus row: two-stroke and closed-head arrows; previously trivial: Pen / stylus row: ink, eraser and Ink to Shape incl. arrows landed; previously trivial: a window too big for its screen shrinks to fit when it opens, #1215; previously trivial: 32-bit Windows starts on OpenGL; previously major: first version) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4 and Word for Windows
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-12 · **Change:** minor (Android: the arm64 port re-based onto upstream v0.18.1, so the device-verified touch and mouse paths ride on the current engine; previously trivial: newly opened window dimensions are constrained to fit available screen dimensions, #5871); previously trivial (print helpers erase loaded plaintext inputs before driver work, #5710); previously trivial (Windows print submissions use isolated helpers so a cancelled driver cannot block a retry, #5710); previously trivial (print cancellation remains available without a document; sending-boundary limitation clarified, #5710); previously trivial (a print job waiting on its driver can be cancelled, and quitting doesn't wait for it, #5710); previously trivial (the printer list no longer waits on printer drivers, #5710); previously trivial (Linux Read Aloud: a sentence a screen reader cuts off is said again); previously trivial (ink page lookup work, #3614); previously trivial (only the PDF sent to the printer has no link annotations; Save these pages as PDF keeps them, #4734); previously trivial (a document with links prints: the print job's PDF has no link annotations, #4734; previously trivial: Pen / stylus row: two-stroke and closed-head arrows; previously trivial: Pen / stylus row: ink, eraser and Ink to Shape incl. arrows landed; previously trivial: a window too big for its screen shrinks to fit when it opens, #1215; previously trivial: 32-bit Windows starts on OpenGL; previously major: first version) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4 and Word for Windows
 
 > **Printing update:** 2026-10-12 · direct desktop printing through craft-print; details below.
 
@@ -21,13 +21,35 @@ pens, microphones (Dictate) and speakers (Read Aloud), and displays.
 | Touch screens and touchpads: pinch zoom, inertial scroll | ✅ | ✅ pinch (#179) | ✅ | ✅ inertial scroll (#252) | ✅ | 85% | 0–1 |
 | Scanners/cameras (Insert from device / Continuity Camera on Mac) | ✅ | ❌ | ❌ | ❌ | ❌ | 0% | 2–4 |
 
-Ink replay, eraser picking, lasso selection and arrow-candidate discovery reuse the paragraph prefixes they have already scanned (#3614). Page item order, stroke geometry and saved data retain their behavior. This narrows the stability work; ink import fidelity, native pen input and broader corpus qualification remain open.
-File > Print offers 2, 4, 6, 9 or 16 logical pages per physical sheet side and left/right-bound booklets (#641). Preview and print PDF share the sheet plan, selected pages, parity, copy padding and markup geometry. Custom-range changes reset the preview to the first sheet; Print Markup invalidates preview layout and textures. Native jobs omit link annotations as required by upstream #4734, while saved print PDFs keep their remapped links. Native printing submits copies to the spooler without multiplying them in the PDF. Ordinary PDF export remains single-page by default. Translations are reviewed separately in craft-i18n#38. Physical-printer qualification and driver-specific options remain unverified.
+**On Android** (the arm64 build, verified on a Samsung Galaxy Tab S11, SM-X736B, Android 16): the
+same interface runs on the touch screen — a finger pans the page and scrolls the browser's storage
+list, a still hold selects the word under the finger (with its handles) and opens the context menu
+over it, a tap places the caret and a double-tap selects a word; a touch-made selection grows by
+dragging its two teardrop handles, character by character, the way Word on touch does — the
+drag-growth paths still stand down for touch, so a finger never drag-selects. Keyboard modifiers are
+stamped onto each frame's key events, so chords reach egui (the on-device pass exercised typing;
+no Bluetooth keyboard was attached), and the vendored winit fills Android's mouse path, so a mouse
+attached to the tablet keeps hover, wheel and right button, verified on device with the signed
+release build: a single click places the caret only (on a word, or invisibly on a punctuation
+character), a double-click selects a word, a triple-click a paragraph, a press-drag selects, the
+right button opens the context menu, and the wheel and hover work; its primary button is deduped,
+because devices report a click through both
+Android's Down/Up and ButtonPress/Release pairs, and one physical click must be one click — and the
+button that changed comes from a diff of the button state, not `AMotionEvent_getActionButton` (an
+API 33 symbol some devices' `libandroid` omits, which failed the whole library to load on an API 31
+Huawei MediaPad, AGS5-W09). A tap so fast its down and up reach the app in one pass still counts as
+touch, and a handle dragged onto the selection's other end keeps the drag alive (both handles stack
+at the caret, as Word's do) so pulling past regrows the selection the other way. Options ›
+General offers a 50% interface size for the tablet's 2560×1600 landscape screen.
+
+The port re-based onto upstream v0.18.1 in 2026-11 carries the same input stack; its device
+re-check on the two tablets is pending.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-12 | minor | Android: the port re-based onto upstream v0.18.1; the Tab S11 and MediaPad device re-check of the new build is pending |
 | 2026-11-07 | trivial | Newly opened secondary windows constrain their initial viewport dimensions to the monitor's usable area, preventing windows from exceeding screen width on scaled displays (#5871) |
 | 2026-11-06 | trivial | Print helpers remove loaded PDF/settings files before driver work, tolerate prior removal and report cleanup errors; a held-driver regression checks the files are already absent (#5710) |
 | 2026-11-06 | trivial | Windows print submissions use a separate helper per job, preserving provider serialization inside the helper. An acknowledged cancellation stops that helper, so a stalled cancelled driver cannot block a later job; normal shutdown reaps helpers and removes temporary PDFs. The helper erases its plaintext inputs before driver work; a hard app crash during startup can still leave private temporary files. Startup requires an explicit start grant; after sending begins, jobs complete (#5710) |

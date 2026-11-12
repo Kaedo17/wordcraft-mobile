@@ -5294,3 +5294,454 @@ fn a_linked_text_box_shows_and_follows_its_link_from_inside() {
     let (start, _) = wordcraft_engine::cmd::insert::bookmark_range(&s.doc, "Spot").unwrap();
     assert!(s.sel.is_collapsed() && s.sel.focus == start, "the caret went to the bookmark: {:?}", s.sel);
 }
+
+// --- Touch selection handles (Android: a selection grows by dragging its ends) ---
+
+/// The device batches a touch phase's events into one pass (egui-winit pushes them
+/// together) and the selection machinery reads that batched state; kittest runs a pass
+/// per queued event, which splits them. So these tests drive `run_ui` directly, one
+/// hand-built `RawInput` per pass, exactly the event batches the device sends.
+use egui::{Event, TouchId, TouchPhase};
+
+struct TouchBench {
+    ctx: egui::Context,
+    app: WordApp,
+    t: f64,
+}
+
+impl TouchBench {
+    fn new(text: &str) -> Self {
+        let mut app = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Default::default());
+        app.run("text.insert", json!({"text": text})).unwrap();
+        app.run("view.commentsPane", json!({"value": false})).unwrap();
+        let mut b = Self { ctx: egui::Context::default(), app, t: 0.0 };
+        for _ in 0..6 {
+            b.pass(vec![]);
+        }
+        b
+    }
+
+    /// One pass: `events` in one batch, a sixtieth of a second later.
+    fn pass(&mut self, events: Vec<Event>) {
+        self.t += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+            time: Some(self.t),
+            events,
+            ..Default::default()
+        };
+        let ctx = self.ctx.clone();
+        let app = &mut self.app;
+        let mut run = ctx.run_ui(input, |ui| {
+            app.logic(&ctx);
+            app.ui(ui);
+        });
+        run.textures_delta.clear();
+    }
+
+    /// The screen point of a document position's line bottom (a handle's tip).
+    fn tip(&mut self, at: &Pos) -> Pos2 {
+        let c = self.app.session.layout().caret_on(at, 0).expect("caret");
+        page_to_screen(&mut self.app, c.page, c.x, c.top + c.height).expect("on screen")
+    }
+
+    /// A finger tap: the touch phase's events as egui-winit pushes them, together, with
+    /// the pointer gone at the end of the release batch.
+    fn tap(&mut self, at: Pos2) {
+        self.pass(vec![
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: at, force: Some(0.5) },
+            Event::PointerMoved(at),
+            Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+        ]);
+        self.pass(vec![
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: at, force: Some(0.0) },
+            Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+            Event::PointerGone,
+        ]);
+    }
+
+    /// A tap so fast that its down and up reach the app in one pass (an injected tap
+    /// does; the pump delivers both before the frame runs): every event at once.
+    fn fast_tap(&mut self, at: Pos2) {
+        self.pass(vec![
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: at, force: Some(0.5) },
+            Event::PointerMoved(at),
+            Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: at, force: Some(0.0) },
+            Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+            Event::PointerGone,
+        ]);
+    }
+
+    /// A finger drag: the press, a few moves, the release.
+    fn touch_drag(&mut self, from: Pos2, to: Pos2) {
+        self.pass(vec![
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: from, force: Some(0.5) },
+            Event::PointerMoved(from),
+            Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+        ]);
+        for k in 1..=4 {
+            let p = from + (to - from) * (k as f32 / 4.0);
+            self.pass(vec![
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Move, pos: p, force: Some(0.5) },
+                Event::PointerMoved(p),
+            ]);
+        }
+        self.pass(vec![
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: to, force: Some(0.0) },
+            Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+            Event::PointerGone,
+        ]);
+    }
+
+    /// A drag through exact waypoints without lifting the finger: press at `from`, one
+    /// pass per waypoint, release at `to`. A device finger's fine-grained moves land on
+    /// the other end of the selection; interpolated ones skip over it.
+    fn touch_drag_through(&mut self, from: Pos2, mids: Vec<Pos2>, to: Pos2) {
+        self.pass(vec![
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: from, force: Some(0.5) },
+            Event::PointerMoved(from),
+            Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+        ]);
+        for p in mids.into_iter().chain(std::iter::once(to)) {
+            self.pass(vec![
+                Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Move, pos: p, force: Some(0.5) },
+                Event::PointerMoved(p),
+            ]);
+        }
+        self.pass(vec![
+            Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: to, force: Some(0.0) },
+            Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+            Event::PointerGone,
+        ]);
+    }
+
+    /// A mouse click (no touch events): the press and its release a frame apart.
+    fn mouse_click(&mut self, at: Pos2) {
+        self.pass(vec![
+            Event::PointerMoved(at),
+            Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+        ]);
+        self.pass(vec![
+            Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+            Event::PointerGone,
+        ]);
+    }
+}
+
+/// Double-tap selects a word and arms the touch handles (the tap itself still lands
+/// the caret first); a mouse click never arms them, and clears them again.
+#[test]
+fn a_double_tap_arms_the_touch_handles_and_a_mouse_click_disarms_them() {
+    let mut b = TouchBench::new("Alpha beta gamma delta");
+    // A single tap places the caret and never arms the handles.
+    let at = page_to_screen(&mut b.app, 0, 100.0, 100.0).expect("page on screen");
+    b.tap(at);
+    assert!(!b.app.canvas.touch_sel, "a tap is not a selection");
+    assert!(b.app.session.sel.is_collapsed());
+    // Double-tap inside "beta" (off 8) selects the word and arms the handles.
+    let at = {
+        let c = b.app.session.layout().caret_on(&Pos::body(0, 8), 0).expect("caret");
+        page_to_screen(&mut b.app, c.page, c.x + 1.0, c.top + c.height / 2.0).expect("on screen")
+    };
+    b.tap(at);
+    for _ in 0..8 {
+        b.pass(vec![]);
+    }
+    b.tap(at);
+    let (s, e) = b.app.session.sel.ordered();
+    assert_eq!((s, e), (Pos::body(0, 6), Pos::body(0, 11)), "the word and its trailing space");
+    assert!(b.app.canvas.touch_sel, "a touch selection shows its handles");
+    // A mouse click on another word places the caret and disarms the handles.
+    for _ in 0..40 {
+        b.pass(vec![]);
+    }
+    let mouse_at = {
+        let c = b.app.session.layout().caret_on(&Pos::body(0, 13), 0).expect("caret");
+        page_to_screen(&mut b.app, c.page, c.x + 1.0, c.top + c.height / 2.0).expect("on screen")
+    };
+    b.mouse_click(mouse_at);
+    assert!(b.app.session.sel.is_collapsed(), "a click collapses");
+    assert!(!b.app.canvas.touch_sel, "a mouse click never shows handles");
+}
+
+/// The scroll-to-caret ease takes about a second; wait for it to settle.
+fn settle(b: &mut TouchBench) {
+    let mut last = None;
+    let mut stable = 0;
+    for _ in 0..600 {
+        b.pass(vec![]);
+        let s = b.app.canvas.scroll_offset;
+        stable = if last.is_some_and(|l: egui::Vec2| (l - s).length() < 0.5) { stable + 1 } else { 0 };
+        last = Some(s);
+        if stable >= 5 {
+            break;
+        }
+    }
+}
+
+/// Dragging a handle moves only its own end, character by character, and never pans
+/// the page (the press belongs to the handle, not the canvas's arbiter).
+#[test]
+fn dragging_the_handles_extends_the_selection_without_panning() {
+    let mut b = TouchBench::new(&(format!("{}\r", "Alpha beta gamma delta").repeat(49) + "Alpha beta gamma delta"));
+    // The caret goes to the document start; the canvas settles with the first line at the
+    // viewport's very top edge, so the test aims a few paragraphs down, well inside the
+    // canvas, and computes the word the double-tap will select the way the canvas
+    // hit-tests (this stays right wherever the settled scroll puts the page).
+    b.app.run("caret.docStart", json!({})).unwrap();
+    settle(&mut b);
+    let at = page_to_screen(&mut b.app, 0, 150.0, 300.0).expect("page on screen");
+    let (s, e) = {
+        let layout = b.app.session.layout();
+        let pos = layout.hit(0, 150.0, 300.0, StoryRef::Body).expect("hit");
+        let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+        (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+    };
+    b.tap(at);
+    for _ in 0..8 {
+        b.pass(vec![]);
+    }
+    b.tap(at);
+    assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+    // The end handle hangs under the selection's end; drag it two characters on, into the
+    // next word. The caret moved, so the view eases again: settle, then aim afresh.
+    settle(&mut b);
+    let to = b.tip(&Pos { off: e.off + 2, ..e.clone() });
+    let from = b.tip(&e) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+    let scroll = b.app.canvas.scroll_offset;
+    b.touch_drag(from, to);
+    let (s2, e2) = b.app.session.sel.ordered();
+    assert_eq!(s2, s, "the start stays");
+    assert_eq!(e2, Pos { off: e.off + 2, ..e.clone() }, "the end follows the handle");
+    assert_eq!(b.app.canvas.scroll_offset, scroll, "a handle drag never pans");
+    // The start handle grows the selection back two characters, the end staying put.
+    settle(&mut b);
+    let to = b.tip(&Pos { off: s.off + 2, ..s.clone() });
+    let from = b.tip(&s2) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+    b.touch_drag(from, to);
+    let (s3, e3) = b.app.session.sel.ordered();
+    assert_eq!(s3, Pos { off: s.off + 2, ..s.clone() }, "the start follows the handle");
+    assert_eq!(e3, e2, "the end stays");
+    assert_eq!(b.app.canvas.scroll_offset, scroll, "still no panning");
+}
+
+/// Dragging a handle across the other end reverses the selection and keeps the original
+/// other end (Word and every Android text widget swap the handle roles on a crossing).
+#[test]
+fn dragging_a_handle_past_the_other_end_reverses_the_selection() {
+    let mut b = TouchBench::new("Alpha beta gamma delta");
+    b.app.run("caret.docStart", json!({})).unwrap();
+    settle(&mut b);
+    let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+    let (s, e) = {
+        let layout = b.app.session.layout();
+        let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+        let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+        (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+    };
+    b.tap(at);
+    for _ in 0..8 {
+        b.pass(vec![]);
+    }
+    b.tap(at);
+    assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+    settle(&mut b);
+    // The end handle dragged four characters past the start: the selection reverses (the
+    // dragged end takes over) and the original start stays as the other end — the pass
+    // after the crossing must not collapse the selection to the finger.
+    let to = b.tip(&Pos { off: s.off - 4, ..s.clone() });
+    let from = b.tip(&e) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+    b.touch_drag(from, to);
+    let (r1, r2) = b.app.session.sel.ordered();
+    assert_eq!(r1, Pos { off: s.off - 4, ..s.clone() }, "the drag end took over");
+    assert_eq!(r2, s, "the original start stays as the other end");
+}
+
+/// The start handle dragged past the other end: the selection reverses and the original
+/// end stays — the pass after the crossing must not collapse the selection to the finger.
+#[test]
+fn dragging_the_start_handle_past_the_end_keeps_the_end() {
+    let mut b = TouchBench::new("Alpha beta gamma delta");
+    b.app.run("caret.docStart", json!({})).unwrap();
+    settle(&mut b);
+    let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+    let (s, e) = {
+        let layout = b.app.session.layout();
+        let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+        let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+        (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+    };
+    b.tap(at);
+    for _ in 0..8 {
+        b.pass(vec![]);
+    }
+    b.tap(at);
+    assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+    settle(&mut b);
+    let to = b.tip(&Pos { off: e.off + 4, ..e.clone() });
+    let from = b.tip(&s) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+    b.touch_drag(from, to);
+    let (r1, r2) = b.app.session.sel.ordered();
+    assert_eq!(r1, e, "the original end stays as the other end");
+    assert_eq!(r2, Pos { off: e.off + 4, ..e.clone() }, "the drag end took over");
+}
+
+/// A handle dragged exactly onto the other end collapses the selection but must keep the
+/// drag alive (Word keeps its handles stacked at the caret): pulling on past regrows the
+/// selection the other way, in the same gesture, without a dead zone.
+#[test]
+fn a_handle_drag_through_the_other_end_keeps_the_drag_alive() {
+    let mut b = TouchBench::new("Alpha beta gamma delta");
+    b.app.run("caret.docStart", json!({})).unwrap();
+    settle(&mut b);
+    let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+    let (s, e) = {
+        let layout = b.app.session.layout();
+        let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+        let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+        (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+    };
+    b.tap(at);
+    for _ in 0..8 {
+        b.pass(vec![]);
+    }
+    b.tap(at);
+    assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+    settle(&mut b);
+    // One gesture: onto the start handle's exact tip (the ends meet, the selection
+    // collapses), then on past it into "Alpha".
+    let from = b.tip(&e) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+    let onto = b.tip(&s) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+    let drop_off = b.tip(&Pos { off: s.off - 2, ..s.clone() });
+    b.touch_drag_through(from, vec![onto], drop_off);
+    let (r1, r2) = b.app.session.sel.ordered();
+    assert_eq!(r1, Pos { off: s.off - 2, ..s.clone() }, "the drag end took over past the meet");
+    assert_eq!(r2, s, "the original start stays as the other end");
+    assert!(b.app.canvas.touch_sel, "the handles stayed armed through the meet");
+}
+
+/// Dropping a handle exactly on the other end leaves the selection collapsed with its
+/// handles still armed at the caret (they stack there, as Word's do), not lost.
+#[test]
+fn dropping_a_handle_on_the_other_end_keeps_the_handles_armed() {
+    let mut b = TouchBench::new("Alpha beta gamma delta");
+    b.app.run("caret.docStart", json!({})).unwrap();
+    settle(&mut b);
+    let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+    let (s, e) = {
+        let layout = b.app.session.layout();
+        let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+        let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+        (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+    };
+    b.tap(at);
+    for _ in 0..8 {
+        b.pass(vec![]);
+    }
+    b.tap(at);
+    assert_eq!(b.app.session.sel.ordered(), (s.clone(), e.clone()), "the word first");
+    settle(&mut b);
+    let from = b.tip(&e) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+    let onto = b.tip(&s) + vec2(0.0, HANDLE_SPIKE + HANDLE_RADIUS);
+    b.touch_drag(from, onto);
+    assert!(b.app.session.sel.is_collapsed(), "the ends met");
+    assert_eq!(b.app.session.sel.focus, s, "the collapse is at the other end");
+    assert!(b.app.canvas.touch_sel, "the handles stay armed at the caret");
+    // The stacked handles are still there to take hold of: grabbing them and pulling
+    // away regrows the selection, instead of the dead tap a lost pair would leave.
+    settle(&mut b);
+    let away = b.tip(&Pos { off: e.off + 3, ..e.clone() });
+    b.touch_drag(onto, away);
+    let (r1, r2) = b.app.session.sel.ordered();
+    assert_eq!(r1, s, "the start stays");
+    assert_eq!(r2, Pos { off: e.off + 3, ..e.clone() }, "the end regrew from the stack");
+    assert!(b.app.canvas.touch_sel, "still armed after the regrow");
+}
+
+/// A tap somewhere else just before a double-tap must not turn it into a paragraph: the
+/// click that ends the run takes its count from the app's own position-aware counter.
+#[test]
+fn a_tap_somewhere_else_does_not_turn_a_double_tap_into_a_paragraph() {
+    let mut b = TouchBench::new("Alpha beta gamma delta");
+    b.app.run("caret.docStart", json!({})).unwrap();
+    settle(&mut b);
+    // A tap on paragraph 0's word, then a double-tap one line down, quickly.
+    let a = page_to_screen(&mut b.app, 0, 150.0, 72.0).expect("page on screen");
+    let at = page_to_screen(&mut b.app, 0, 150.0, 104.0).expect("page on screen");
+    let (s, e) = {
+        let layout = b.app.session.layout();
+        let pos = layout.hit(0, 150.0, 104.0, StoryRef::Body).expect("hit");
+        let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+        (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+    };
+    b.tap(a);
+    for _ in 0..4 {
+        b.pass(vec![]);
+    }
+    b.tap(at);
+    for _ in 0..2 {
+        b.pass(vec![]);
+    }
+    b.tap(at);
+    assert_eq!(b.app.session.sel.ordered(), (s, e), "the word, not the paragraph");
+}
+
+/// A still hold (Word on touch) selects the word under the finger — with its handles —
+/// and opens the context menu over it.
+#[test]
+fn a_long_press_selects_the_word_and_opens_the_menu() {
+    let mut b = TouchBench::new("Alpha beta gamma delta");
+    b.app.run("caret.docStart", json!({})).unwrap();
+    settle(&mut b);
+    let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+    let (s, e) = {
+        let layout = b.app.session.layout();
+        let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+        let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+        (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+    };
+    // Press and hold past egui's long-press (0.8 s), then lift.
+    b.pass(vec![
+        Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: at, force: Some(0.5) },
+        Event::PointerMoved(at),
+        Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+    ]);
+    for _ in 0..60 {
+        b.pass(vec![]);
+    }
+    b.pass(vec![
+        Event::Touch { device_id: egui::TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: at, force: Some(0.0) },
+        Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+        Event::PointerGone,
+    ]);
+    for _ in 0..3 {
+        b.pass(vec![]);
+    }
+    assert_eq!(b.app.session.sel.ordered(), (s, e), "the word under the hold");
+    assert!(b.app.canvas.touch_sel, "the hold's selection shows its handles");
+    assert!(b.app.canvas.context_menu_open, "the menu is open over it");
+}
+
+/// A tap so fast its down and up land in one pass (an injected tap, or a very quick
+/// finger) still counts as touch: the double-tap's word shows its handles.
+#[test]
+fn a_fast_tap_whose_down_and_up_share_a_pass_still_arms_the_handles() {
+    let mut b = TouchBench::new("Alpha beta gamma delta");
+    b.app.run("caret.docStart", json!({})).unwrap();
+    settle(&mut b);
+    let at = page_to_screen(&mut b.app, 0, 150.0, 90.0).expect("page on screen");
+    let (s, e) = {
+        let layout = b.app.session.layout();
+        let pos = layout.hit(0, 150.0, 90.0, StoryRef::Body).expect("hit");
+        let (a, e) = b.app.session.doc.para_at(&pos).expect("para").word_at(pos.off);
+        (Pos { off: a, ..pos.clone() }, Pos { off: e, ..pos })
+    };
+    b.fast_tap(at);
+    for _ in 0..4 {
+        b.pass(vec![]);
+    }
+    b.fast_tap(at);
+    assert_eq!(b.app.session.sel.ordered(), (s, e), "the word");
+    assert!(b.app.canvas.touch_sel, "the handles arm even though the touch is gone");
+}
