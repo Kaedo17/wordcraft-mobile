@@ -249,15 +249,16 @@ jobs:
 
       - name: Verify the signature against the keystore
         # The published APK must carry the release key, not a debug key: the APK's certificate
-        # digest must equal the keystore certificate fingerprint.
+        # digest must equal the keystore certificate fingerprint. apksigner prints lowercase and
+        # keytool prints uppercase, so both are compared lowercased.
         run: |
           set -euo pipefail
           apk="${{ steps.apk.outputs.path }}"
           from_apk="$("$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}/apksigner" verify --print-certs "$apk" 2>/dev/null \
-            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':')"
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':' | tr 'A-Z' 'a-z')"
           from_keystore="$(keytool -list -keystore "$CARGO_APK_RELEASE_KEYSTORE" \
             -storepass "$CARGO_APK_RELEASE_KEYSTORE_PASSWORD" 2>/dev/null \
-            | sed -n 's/^Certificate fingerprint (SHA-256): //p' | head -n1 | tr -d ':')"
+            | sed -n 's/^Certificate fingerprint (SHA-256): //p' | head -n1 | tr -d ':' | tr 'A-Z' 'a-z')"
           if [ -z "$from_apk" ] || [ -z "$from_keystore" ]; then
             echo "could not read a certificate digest from the APK or from the keystore" >&2
             exit 1
