@@ -97,8 +97,10 @@ impl InterfaceSize {
     pub const MAX: u16 = 300;
     /// Follow the display scale the system reports.
     pub const AUTO: InterfaceSize = InterfaceSize(None);
-    /// The sizes File › Options offers after Auto, in percent (PhotoCraft's and PdfCraft's).
-    pub const PRESETS: [u16; 12] = [75, 80, 85, 90, 95, 100, 125, 150, 175, 200, 250, 300];
+    /// The sizes File › Options offers after Auto, in percent (PhotoCraft's and PdfCraft's);
+    /// starting at 50 %, which a small tablet or phone in landscape still needs (FilmCraft's
+    /// scale list starts there for the same reason).
+    pub const PRESETS: [u16; 13] = [50, 75, 80, 85, 90, 95, 100, 125, 150, 175, 200, 250, 300];
 
     /// A chosen size from any number: rounded and clamped to 50–300 %; `None` for NaN or infinity.
     pub fn from_percent(percent: f64) -> Option<InterfaceSize> {
@@ -625,6 +627,9 @@ pub fn font_definitions_language_arabic(
     }
     #[cfg(target_arch = "wasm32")]
     let _ = system_cjk;
+    // The installed Arabic face is read only off wasm, like the CJK one above.
+    #[cfg(target_arch = "wasm32")]
+    let _ = system_arabic;
     // Arabic-script faces last: the Arabic interface, its name in the language list, Arabic file
     // names. Without an embedded one (a build without craft-fonts), an installed font, read when
     // `system_arabic` is set: for an Arabic interface.
@@ -948,6 +953,17 @@ mod tests {
         assert!(light > 0);
         let ratio = dark as f64 / light as f64;
         assert!((1.03..1.12).contains(&ratio), "light {light}, dark {dark}: {ratio:.3}");
+    }
+
+    /// The Options list starts at 50 % — a small tablet or phone in landscape still crowds at
+    /// 75 % — and reads in ascending order, like PhotoCraft's ladder, which already includes
+    /// it. The clamp range (MIN..MAX) always allowed the value.
+    #[test]
+    fn interface_size_presets_start_at_fifty_and_read_in_order() {
+        assert_eq!(super::InterfaceSize::PRESETS.first(), Some(&50));
+        let mut sorted = super::InterfaceSize::PRESETS;
+        sorted.sort_unstable();
+        assert_eq!(sorted, super::InterfaceSize::PRESETS, "the Options list reads top to bottom");
     }
 
     /// WCAG contrast ratio between two opaque colours.

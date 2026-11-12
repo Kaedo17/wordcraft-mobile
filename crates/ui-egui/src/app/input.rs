@@ -8,6 +8,10 @@ impl WordApp {
     /// logic ticks, so offering it again would duplicate input. The step stays queued until a
     /// final (not discarded) UI pass acknowledges it, and a press/release pair stays intact.
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // Android: winit's backend never emits `ModifiersChanged`, so shortcuts and the
+        // wheel/click modifiers egui-winit fills would all see an empty state.
+        #[cfg(target_os = "android")]
+        stamp_android_modifiers(&mut raw.events, &mut self.android_modifiers);
         // Capture the surface from the raw input itself. `InputState::viewport_rect` and the
         // last painted screen rect are stale in a hidden `run_logic` tick; RawInput is the host's
         // current answer, including minimized/occluded and a Wayland `inner_rect: None`.
@@ -174,5 +178,155 @@ pub(crate) fn control_click_as_secondary(events: &mut [egui::Event], held: &mut 
                 *held = false;
             }
         }
+    }
+}
+
+/// Called only on Android, from `raw_input_hook`; everywhere else winit reports the real
+/// modifiers, which this would only duplicate.
+///
+/// Android: winit's backend never emits `ModifiersChanged` (it ignores the meta state Android
+/// carries on every `KeyEvent`), so egui-winit's own modifiers state — what shortcuts and the
+/// wheel and click events read — is always empty. Track the modifier key events as they arrive,
+/// fill every other event's `modifiers` with what was held when it fired, and end the frame
+/// with a `ModifiersChanged` carrying the end state. Mirrors FilmCraft's `stamp_android_modifiers`.
+#[cfg(any(target_os = "android", test))]
+fn stamp_android_modifiers(events: &mut Vec<egui::Event>, held: &mut egui::Modifiers) {
+    for event in events.iter_mut() {
+        match event {
+            // A lost focus clears the tracked state, so a modifier held while the app is
+            // backgrounded cannot stick.
+            egui::Event::WindowFocused(false) => *held = egui::Modifiers::NONE,
+            egui::Event::Key { key: egui::Key::ControlLeft | egui::Key::ControlRight, pressed, .. } => {
+                held.ctrl = *pressed;
+                // As egui-winit itself does on every platform but macOS: the command
+                // shortcut is Ctrl, and COMMAND chords need `command` set.
+                held.command = *pressed;
+            }
+            egui::Event::Key { key: egui::Key::ShiftLeft | egui::Key::ShiftRight, pressed, .. } => held.shift = *pressed,
+            egui::Event::Key { key: egui::Key::AltLeft | egui::Key::AltRight, pressed, .. } => held.alt = *pressed,
+            // The wheel and the buttons carry their own modifiers too (Ctrl + wheel zooms the
+            // page, Ctrl + click opens a cross-reference), and egui-winit fills them from its
+            // own state — always empty here. Stamp them with what was held when they fired.
+            egui::Event::Key { modifiers, .. } => *modifiers = *held,
+            egui::Event::MouseWheel { modifiers, .. } | egui::Event::PointerButton { modifiers, .. } => {
+                *modifiers = *held;
+            }
+            _ => {}
+        }
+    }
+    // `held.command` mirrors ctrl here (COMMAND chords match). Appended last: egui applies
+    // `ModifiersChanged` events in order, so the frame-level modifiers end up as this frame's
+    // end state — not a stale value left in eframe's pending input buffer from an earlier frame.
+    events.push(egui::Event::ModifiersChanged(*held));
+}
+
+#[cfg(test)]
+mod android_modifier_tests {
+    use egui::{Event, Key, Modifiers};
+
+    fn key(key: Key, pressed: bool) -> Event {
+        Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers: Modifiers::NONE }
+    }
+
+    fn stamp(events: Vec<Event>) -> (Vec<Event>, Modifiers) {
+        let mut events = events;
+        let mut held = Modifiers::NONE;
+        super::stamp_android_modifiers(&mut events, &mut held);
+        (events, held)
+    }
+
+    /// The modifiers each key event of the frame carries, in order.
+    fn stamped(events: &[Event]) -> Vec<Modifiers> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Key { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ctrl_chord_gets_the_command_modifiers() {
+        let (events, held) = stamp(vec![key(Key::ControlLeft, true), key(Key::S, true)]);
+        // The Ctrl press itself is left alone; the S press under it carries Ctrl…
+        assert_eq!(stamped(&events), vec![Modifiers::NONE, Modifiers { ctrl: true, command: true, ..Modifiers::NONE }]);
+        assert!(held.ctrl && held.command);
+    }
+
+    #[test]
+    fn a_released_ctrl_ends_the_chord_within_the_frame() {
+        let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+        let (events, held) =
+            stamp(vec![key(Key::Z, true), key(Key::ControlLeft, true), key(Key::Z, true), key(Key::ControlRight, false), key(Key::Z, true)]);
+        // Five key events, none of the modifier presses/releases stamped: the Z under Ctrl
+        // carries Ctrl, and the Z after the release carries nothing — the frame ends clean,
+        // which is what a shortcut bound to Ctrl+Z must see.
+        assert_eq!(stamped(&events), vec![Modifiers::NONE, Modifiers::NONE, ctrl, Modifiers::NONE, Modifiers::NONE]);
+        assert_eq!(held, Modifiers::NONE);
+    }
+
+    #[test]
+    fn shift_and_alt_are_tracked() {
+        // The modifier presses themselves stay unstamped (their own events carry nothing); only
+        // the key pressed under both carries the pair.
+        let both = Modifiers { shift: true, alt: true, ..Modifiers::NONE };
+        let (events, held) = stamp(vec![key(Key::ShiftLeft, true), key(Key::AltLeft, true), key(Key::F2, true)]);
+        assert_eq!(stamped(&events)[2], both);
+        assert_eq!(held, both);
+    }
+
+    #[test]
+    fn a_lost_focus_clears_a_stuck_modifier() {
+        let (events, held) = stamp(vec![key(Key::ControlLeft, true), Event::WindowFocused(false), key(Key::S, true)]);
+        assert_eq!(stamped(&events), vec![Modifiers::NONE, Modifiers::NONE], "the S after the lost focus is a bare S");
+        assert_eq!(held, Modifiers::NONE);
+    }
+
+    #[test]
+    fn the_frame_announces_its_end_state() {
+        let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+        let (events, _) = stamp(vec![key(Key::ControlLeft, true)]);
+        let last = events.last().cloned().expect("the frame ends with a ModifiersChanged");
+        assert!(matches!(last, Event::ModifiersChanged(m) if m == ctrl));
+    }
+
+    /// The stamped state must match what the real binding patterns expect: egui matches a
+    /// pattern with `matches_logically`, and a pattern holding COMMAND matches only when
+    /// `command` is set (egui-winit sets it from Ctrl off macOS).
+    #[test]
+    fn stamped_modifiers_match_the_binding_patterns() {
+        let pattern = Modifiers { command: true, ..Modifiers::NONE };
+        let (_, held) = stamp(vec![key(Key::ControlLeft, true), key(Key::S, true)]);
+        assert!(held.matches_logically(pattern), "a Ctrl+S chord matches a COMMAND+S binding");
+        let (_, held) = stamp(vec![key(Key::ControlLeft, true), key(Key::ControlLeft, false), key(Key::S, true)]);
+        assert!(!held.matches_logically(pattern));
+    }
+
+    /// The wheel and the pointer buttons carry the held modifiers too (Ctrl + wheel zooms the
+    /// page, Ctrl + click opens a cross-reference), where egui-winit fills them from its —
+    /// always empty — state.
+    #[test]
+    fn wheel_and_click_carry_the_held_modifiers() {
+        let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+        let (events, _) = stamp(vec![
+            key(Key::ControlLeft, true),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, -3.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
+                modifiers: Modifiers::NONE,
+            },
+            egui::Event::PointerButton { pos: egui::Pos2::ZERO, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+        ]);
+        let carried: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::MouseWheel { modifiers, .. } | egui::Event::PointerButton { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(carried, vec![ctrl, ctrl]);
     }
 }

@@ -643,6 +643,15 @@ pub struct WordApp {
     pub integrated_titlebar: bool,
     /// macOS: the title bar's height and where its content starts, around the traffic lights.
     pub mac_titlebar: chrome::MacTitleBar,
+    /// Android: the held modifier keys, carried across frames. winit's Android backend never
+    /// emits `ModifiersChanged` (it ignores the meta state Android carries on every `KeyEvent`),
+    /// so egui-winit's modifier state there is always empty; chords, Ctrl+wheel zoom and
+    /// Ctrl+click depend on this, and [`raw_input_hook`](Self::raw_input_hook) stamps every
+    /// other event's own modifiers with what was held when it fired and ends the frame with a
+    /// `ModifiersChanged` for the frame's end state. Cleared on a lost focus so a modifier
+    /// held while the app is backgrounded cannot stick.
+    #[cfg(target_os = "android")]
+    android_modifiers: egui::Modifiers,
     /// Focus (#1678): the ribbon is dropped down from the Focus bar, over the page.
     pub(crate) focus_ribbon: bool,
     pub(crate) updates_rt: updates_ui::Runtime,

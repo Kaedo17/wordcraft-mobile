@@ -104,6 +104,8 @@ impl WordApp {
             print_feedback_seen: None,
             integrated_titlebar: false,
             mac_titlebar: chrome::MacTitleBar::default(),
+            #[cfg(target_os = "android")]
+            android_modifiers: egui::Modifiers::NONE,
             updates_rt: updates_ui::Runtime::default(),
             packs_rt: Default::default(),
             control_rx: None,
