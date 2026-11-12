@@ -1,6 +1,6 @@
 # WordCraft architecture
 
-> **Last reviewed:** 2026-10-28 · **Last updated:** 2026-11-05 · **Change:** trivial (the hostile-parameter test now has a sibling for `file.*`, `insert.picture` and `insert.textFromFile`; previously trivial: craft-proof's row says what a build without the Language data keeps: English spelling from an installed Hunspell English or the built-in list, rule hyphenation for Bulgarian, Turkish and Russian; previously minor: proofing moved out: `wordcraft-proof` is craft-libs' `craft-proof`, its Language data craft-i18n's `language-data/` embedded from `CRAFT_I18N_DIR`; previously major: crate and layer inventory, source counts, proofing languages and module boundaries re-measured from this checkout; previously minor: `proof` is per language: English and Polish; previously major: first committed version; `plan/architecture.md` is local-only) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
+> **Last reviewed:** 2026-10-28 · **Last updated:** 2026-11-12 · **Change:** minor (Android: the arm64 port re-based onto upstream v0.17.0 — the NativeActivity entry crate over the shared app library, the built-in browser serving every file dialog with shared storage as its second root, the vendored winit's mouse path, the stamped keyboard modifiers and the canvas's touch arbiter; previously trivial: the hostile-parameter test now has a sibling for `file.*`, `insert.picture` and `insert.textFromFile`; previously trivial: craft-proof's row says what a build without the Language data keeps: English spelling from an installed Hunspell English or the built-in list, rule hyphenation for Bulgarian, Turkish and Russian; previously minor: proofing moved out: `wordcraft-proof` is craft-libs' `craft-proof`, its Language data craft-i18n's `language-data/` embedded from `CRAFT_I18N_DIR`; previously major: crate and layer inventory, source counts, proofing languages and module boundaries re-measured from this checkout; previously minor: `proof` is per language: English and Polish; previously major: first committed version; `plan/architecture.md` is local-only) · **Target:** Microsoft Word (Microsoft 365) for Mac 16.113.4
 
 How WordCraft is built today. The longer design notes in
 `plan/architecture.md` are gitignored and local to the original author's machine; this file is the
@@ -14,6 +14,11 @@ members with `crates/*`, `apps/*` and `xtask`; `cargo xtask layers` verified 20 
 (16 crates, 3 apps and `xtask`) and no layering violations. The layer and line counts below are
 from that command and per-directory `find ... -name '*.rs' ... | wc -l` counts on that date. Each
 crate name links to its source tree.
+
+On 2026-11-12 the fork's Android entry crate `apps/wordcraft-android` (208 lines) joins the apps,
+and `apps/wordcraft` is a library with a shim binary (5,585 lines with its tests). `cargo xtask
+layers` still verifies the 20 packages it measures (16 crates, 3 apps and `xtask`) and lists the
+Android entry crate as exempt: it is the platform shell over the shared app, not a layer.
 
 | Layer | Crate | Lines | Job |
 |---|---|---|---|
@@ -33,9 +38,10 @@ crate name links to its source tree.
 | L5 | [`mcp`](../crates/mcp/src) | 1,822 | MCP server exposing commands as tools; headless or bridged to the running app |
 | L5 | [`zotero`](../crates/zotero/src) | 2,372 | Zotero word-processor integration protocol answered against a `Session` |
 | L6 | [`ui-egui`](../crates/ui-egui/src) | 81,759 | Front end: ribbon, keytips, mini-toolbar, Backstage, canvas, rulers, panes, dialogs, i18n, themes, control channel and headless `ui_shot` example |
-| apps | [`wordcraft`](../apps/wordcraft/src) | 3,740 | Desktop app (eframe + wgpu; logging, window geometry and file associations) |
+| apps | [`wordcraft`](../apps/wordcraft/src) | 5,585 | Desktop app: the shared app library with a shim binary (eframe + wgpu; logging, window geometry and file associations) |
 | apps | [`wordcraft-cli`](../apps/wordcraft-cli/src) | 1,901 | `convert`, `text`, `inspect`, `run`, `commands`, `parity`, `mcp` and `zotero` |
 | apps | [`wordcraft-web`](../apps/wordcraft-web/src) | 1,159 | Browser build (eframe web runner, WebGPU with WebGL2 fallback) |
+| apps | [`wordcraft-android`](../apps/wordcraft-android/src) | 208 | Android arm64 entry crate (NativeActivity cdylib; opens the shared app through `wordcraft::run_android`; the raw JNI confined to `android_access.rs`) |
 | tooling | [`xtask`](../xtask/src) | 1,488 | Workspace maintenance and quality-gate commands, including `layers` |
 
 ## Data flow
@@ -52,6 +58,58 @@ crate name links to its source tree.
 4. **Draw:** the UI paints pages through `render` (CPU raster, cached per page, pixel-aligned) on
    an egui/wgpu canvas; PDF export walks the same display list through `pdf`.
 5. **Save:** `engine::io` picks a writer by extension.
+
+## Host-provided storage (Android)
+
+A host with no system file picker tells the app where its files live through [`Services`](#layers)
+instead of a `cfg` in the dialogs: with `app_files_dir` set, every file command — Open, Save As,
+Export, Insert Picture, recipients, Save as Template — is served by the built-in
+[`file_browser`](../crates/ui-egui/src/file_browser.rs) (the #576 browser the desktop already had),
+which opens on the frame the command asks and answers exactly as the system dialog would. The
+browser's navigation is clamped inside the host's roots: *Up one level* stops at the root it is in,
+the home-folder button goes to the app's `Documents` folder, and a typed pick outside the roots is
+refused as not found. The shared-storage switcher (a second root beside the app's own) is drawn
+while a host offers one — the Android build offers `/storage/emulated/0`, entered only while the
+user's "All files access" grant holds: the grant is checked over JNI at every tap, and a tap that
+finds it un-granted opens Android's settings page instead of navigating.
+
+The Android build splits its app-private data directory once (`apps/wordcraft/src/android_storage.rs`):
+
+```text
+<files>/Documents/  where the browser starts and saves land
+<files>/config/     the settings folder: preferences, logs, the user dictionary, user fonts,
+                    templates, recovery and the control key
+```
+
+A host with a system picker (desktop, web) sets nothing and behaves exactly as before.
+
+## Input (Android)
+
+Two layers make a keyboard and mouse usable there, and a third arbitrates touch. winit — the
+pinned `storytold/winit` fork eframe 0.37 builds against — reports no modifier state on Android
+(it ignores the meta state the OS carries on every key event, so egui-winit never learns
+`Ctrl`/`Shift`/`Alt` and a chord degrades into its plain key: the chord's letter arrives alone
+and types itself into the document), and it drops every motion action that is not a touch
+(upstream's `// TODO mouse events`; 0.31 is still in beta), so a mouse attached to the device —
+Bluetooth, USB or DeX — has no hover, no wheel and no right or middle button. The workspace
+therefore vends winit with that mouse path filled in
+([third_party/winit](../third_party/winit/README.md): one Android-only file, routed through
+`[patch.crates-io]`; every other target compiles the published crate byte-for-byte) and stamps
+the modifier keys onto each frame's key events itself (`stamp_android_modifiers` in `ui-egui`,
+driven from `raw_input_hook` before egui builds its input state). Touch and touch-dragged
+stylus input is untouched in both layers.
+
+The canvas arbitrates a finger press on the page (`mod touch` in
+[canvas.rs](../crates/ui-egui/src/canvas.rs), FilmCraft's touch arbiter cut to the canvas's one
+case — no rows to pick up, no sideways controls). A finger that moves past egui's click distance
+pans the page through the canvas's own scroll — the same `clamped_scroll` the wheel uses, the
+delta fed before the pass so the page follows the finger the frame it moves; a still hold past
+egui's long-press belongs to the context menu, which the menu paths already answer from the
+synthesized secondary click; a quick release stays egui's click — a tap places the caret, a
+double-tap selects a word. A mouse press is never arbitrated, so the desktop keeps its
+drag-select byte for byte, and the three drag-growth branches (columns, units, plain select)
+stand down for touch entirely. Options › General offers a 50% interface size for a small tablet
+or phone.
 
 ## Testing and gates
 
@@ -70,9 +128,14 @@ crate name links to its source tree.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-12 | minor | Android: the arm64 port re-based onto upstream v0.17.0 (entry crate over the split app library, storage roots, browser dialogs, vendored winit mouse path, stamped modifiers, touch arbiter) |
 | 2026-11-05 | trivial | `hostile_file_params_never_panic` runs `file.*`, `insert.picture` and `insert.textFromFile` with junk params and unusable paths (#3719) |
 | 2026-11-02 | trivial | craft-proof's row: without the Language data English spelling falls back to an installed Hunspell English or the built-in Moby list, and only pattern hyphenation is off (#5202 review) |
 | 2026-11-01 | minor | `proof` left the workspace: it is `craft-proof` in storytold/craft-libs (with its history), and the spelling and hyphenation data is craft-i18n's `language-data/` (`CRAFT_I18N_DIR`); `assets/spelling` and `assets/hyphenation` are gone |
 | 2026-10-28 | major | Recounted workspace crates, layers and Rust source lines; refreshed proofing languages and documented current engine/layout module boundaries and source links |
+| 2026-10-26 | minor | Android input: the vendored winit fills the Android mouse path, keyboard modifiers are stamped per frame, and the canvas arbitrates a finger press (pan / long-press menu / tap); the 50% interface size documented |
+| 2026-10-26 | minor | Android: the entry crate's JNI offers shared storage (`/storage/emulated/0`) as the browser's second root — the grant checked and asked for over JNI, the manifest declaring `MANAGE_EXTERNAL_STORAGE` |
+| 2026-10-26 | minor | Android: `Services::app_files_dir` serves every file command in the built-in file browser, clamped to the host's roots (shared storage waits for the grant hooks); the app-private storage splits into `Documents/` and `config/` |
+| 2026-10-26 | minor | Android groundwork: `apps/wordcraft` is a library (`wordcraft::run`/`run_android`) with the desktop binary as a shim, and `apps/wordcraft-android` is the NativeActivity entry crate whose app-private storage resolves the settings folder |
 | 2026-10-10 | minor | `proof`: proofing languages (English, Polish), affix engine, Polish patterns; layout and engine route each run by its language |
 | 2026-10-10 | major | First committed architecture doc, from the crates' sources and `AGENTS.md` |

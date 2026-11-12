@@ -1,0 +1,369 @@
+name: Android release
+
+# Builds WordCraft's arm64 APK, runs the port's quality gates, signs it with the maintainer's
+# release key and publishes it as a GitHub Release on this fork.
+#
+# Why the workflow lives in the fork: the shared release workflow
+# (storytold/craft-common-actions/.github/workflows/release.yml, used here by release.yml) builds
+# macOS, Windows, Linux, Flatpak, Arch, FreeBSD, web and server. It has no Android job, so nothing
+# uploads an APK. The Android job is asked for upstream in
+# https://github.com/storytold/craft-common-actions/issues/183; this fork carries the APK packaging
+# until that job exists. Delete this file once the shared workflow builds Android.
+#
+# It never runs on a push to main or on a pull request: the quality gates run there through ci.yml.
+# Pushing a tag is the release decision, so a tag builds, verifies and publishes the APK. Nothing
+# here pushes to the upstream repository.
+on:
+  push:
+    tags: ["v*-android*"] # the fork's Android release convention, e.g. v0.11.0-android.1
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version for a test run, e.g. 0.11.0-android.1 (empty: Cargo.toml + '-android.1')"
+        type: string
+        default: ""
+      prerelease:
+        description: "Publish as a pre-release (a test run only; a real release is a Release)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # Same pin as ci.yml and release.yml: the fonts embedded in the APK must be the reviewed set.
+  # Without the manifest the build fails (CRAFT_FONTS_REQUIRED) rather than silently dropping faces.
+  CRAFT_FONTS_REF: b076417b5880bd4154bd22f00695b1d28c6bea83
+  # cargo-apk 0.10.0 packs the .so, manifest and resources. Pinned, so a published APK's packaging
+  # does not drift with a new cargo-apk release.
+  CARGO_APK_VERSION: "0.10.0"
+  # The entry crate's [package.metadata.android.sdk] declares min SDK 28 and target SDK 35, so the
+  # platform below is android-35. cargo-apk only accepts a platform inside the NDK's own API range
+  # (NDK r29 stops at API 35), so the platform and NDK travel together.
+  ANDROID_API: "35"
+  ANDROID_NDK: "29.0.14206865"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+  RUST_ABI: arm64-v8a
+
+jobs:
+  # The Rust half first: a failure here is far cheaper to read than the same failure through
+  # cargo-apk, and nothing is published that has not passed these gates.
+  gates:
+    name: Gates (fmt, clippy, tests, layers, assets, wasm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # The reviewed fonts and craft-proof's Language data, from the same commits ci.yml's shared
+      # gate and release.yml use; both actions export their build-input variables.
+      - name: Check out craft-fonts
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@main
+        with:
+          ref: ${{ env.CRAFT_FONTS_REF }}
+
+      - name: Check out craft-i18n
+        uses: storytold/craft-common-actions/actions/checkout-craft-i18n@main
+
+      # Both extra targets the gates need: `cargo xtask wasm` checks wasm32-unknown-unknown and the
+      # arm64 cross-check needs aarch64-linux-android. Upstream's shared gate defaults to the wasm
+      # target for the same reason.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-gates
+
+      # egui_kittest drives its UI harness through wgpu, which needs a Vulkan device; a hosted
+      # runner has no GPU, so the software driver stands in. Same install ci.yml's shared gate uses.
+      - name: System packages for the UI harness
+        uses: storytold/craft-common-actions/actions/install-apt-packages@main
+        with:
+          packages: >-
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev
+            libxi-dev libgtk-3-dev libfontconfig1-dev libfreetype-dev libvulkan1 mesa-vulkan-drivers
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy, no warnings
+        # The three crates the Android port touches: the shared app, its UI, and the entry crate.
+        run: cargo clippy -p wordcraft-ui-egui -p wordcraft -p wordcraft-android --all-targets -- -D warnings
+
+      - name: UI tests
+        run: cargo test -p wordcraft-ui-egui --lib
+
+      - name: Engine tests
+        run: cargo test -p wordcraft-engine --lib
+
+      # The port's pagination and linear-lookup work lives in the layout crate.
+      - name: Layout tests
+        run: cargo test -p wordcraft-layout --lib
+
+      - name: Android entry crate tests
+        run: cargo test -p wordcraft-android
+
+      - name: Layering
+        run: cargo xtask layers
+
+      - name: Assets are all attributed
+        run: cargo xtask assets
+
+      - name: WASM still builds
+        run: cargo xtask wasm
+
+      # The arm64 cross-check runs in the apk job, where the NDK is installed: a build for
+      # aarch64-linux-android compiles C dependencies with the NDK's clang, which a plain runner
+      # without the NDK cannot find.
+
+  apk:
+    name: Signed release APK (arm64)
+    needs: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the release version and asset name
+        run: |
+          set -euo pipefail
+          base="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            # A push here can only be a tag push, so the tag is the release version.
+            version="$GITHUB_REF_NAME"
+          else
+            version="$base-android.1"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          # The asset is named from Cargo.toml's version, so a tag suffix does not repeat inside it.
+          echo "APK_NAME=wordcraft-v$base-android-$RUST_ABI.apk" >> "$GITHUB_ENV"
+
+      - name: Check out craft-fonts
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-apk-release
+
+      # cargo-apk drives aapt and apksigner, both of which need a JDK; pinned so every release uses
+      # the same one.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK (platform ${{ env.ANDROID_API }})
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-${{ env.ANDROID_API }} build-tools;${{ env.ANDROID_BUILD_TOOLS }} platform-tools"
+
+      - name: Android NDK ${{ env.ANDROID_NDK }}
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;${ANDROID_NDK}" > /dev/null
+
+      - name: cargo-apk ${{ env.CARGO_APK_VERSION }}
+        run: cargo install cargo-apk --version "$CARGO_APK_VERSION" --locked
+
+      - name: Unpack the release keystore
+        # The keystore is a fork secret and never a committed file: signing keys stay out of the
+        # repository. cargo-apk signs `--release` from these two environment variables.
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "no ANDROID_RELEASE_KEYSTORE secret: set it to the base64 of the release keystore" >&2
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/wordcraft-release.jks"
+          echo "CARGO_APK_RELEASE_KEYSTORE=$RUNNER_TEMP/wordcraft-release.jks" >> "$GITHUB_ENV"
+          echo "CARGO_APK_RELEASE_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Cross-check for arm64 Android
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          TOOLS="$ANDROID_HOME/ndk/$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # The NDK's clang and ar build the C dependencies for this target. NDK r29 ships only
+          # versioned wrappers (aarch64-linux-android<api>-clang, min SDK 28 here) and no bare
+          # aarch64-linux-android-clang or -ar, so cc-rs needs both tools named explicitly.
+          export CC_aarch64_linux_android="$TOOLS/aarch64-linux-android28-clang"
+          export AR_aarch64_linux_android="$TOOLS/llvm-ar"
+          cargo check -p wordcraft -p wordcraft-android --target aarch64-linux-android
+
+      - name: Build the release APK
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          # The runner image pre-sets ANDROID_NDK_HOME to its own preinstalled NDK, which may not
+          # carry API 35. Point cargo-apk at the NDK installed above so the toolchain and the
+          # platform match, exactly as the local build does.
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          cargo apk build -p wordcraft-android --release
+
+      - name: Find the APK
+        id: apk
+        run: |
+          set -euo pipefail
+          apk="$(find target -name '*.apk' -print 2>/dev/null | head -n1)"
+          if [ -z "$apk" ]; then
+            echo "cargo-apk produced no APK" >&2
+            exit 1
+          fi
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+          ls -l "$apk"
+
+      - name: Verify the signature against the keystore
+        # The published APK must carry the release key, not a debug key: the APK's certificate
+        # digest must equal the keystore certificate fingerprint.
+        run: |
+          set -euo pipefail
+          apk="${{ steps.apk.outputs.path }}"
+          from_apk="$("$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}/apksigner" verify --print-certs "$apk" 2>/dev/null \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':')"
+          from_keystore="$(keytool -list -keystore "$CARGO_APK_RELEASE_KEYSTORE" \
+            -storepass "$CARGO_APK_RELEASE_KEYSTORE_PASSWORD" 2>/dev/null \
+            | sed -n 's/^Certificate fingerprint (SHA-256): //p' | head -n1 | tr -d ':')"
+          if [ -z "$from_apk" ] || [ -z "$from_keystore" ]; then
+            echo "could not read a certificate digest from the APK or from the keystore" >&2
+            exit 1
+          fi
+          if [ "$from_apk" != "$from_keystore" ]; then
+            echo "the APK is signed with a different key: APK $from_apk, keystore $from_keystore" >&2
+            exit 1
+          fi
+          echo "signed with the release key: $from_apk"
+
+      - name: Check the APK's own contents
+        # A hosted runner has no USB, so this checks the artifact's declared contents rather than
+        # claiming a device test it never ran. Installing on a phone is a separate deliberate step.
+        # aapt prints single-quoted fields and reports no abi line, so the native library is read
+        # from the archive itself.
+        run: |
+          set -euo pipefail
+          apk="${{ steps.apk.outputs.path }}"
+          "$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}/aapt" dump badging "$apk" > "$RUNNER_TEMP/badging.txt"
+          grep -q "package: name='ai.storyteller.wordcraft'" "$RUNNER_TEMP/badging.txt" || { echo "wrong package"; exit 1; }
+          grep -q "sdkVersion:'28'" "$RUNNER_TEMP/badging.txt" || { echo "min SDK is not 28"; exit 1; }
+          grep -q "targetSdkVersion:'35'" "$RUNNER_TEMP/badging.txt" || { echo "target SDK is not 35"; exit 1; }
+          grep -q "launchable-activity: name='android.app.NativeActivity'" "$RUNNER_TEMP/badging.txt" || { echo "no NativeActivity launcher"; exit 1; }
+          grep -q "application-label:'WordCraft'" "$RUNNER_TEMP/badging.txt" || { echo "no app label"; exit 1; }
+          grep -q "android.permission.MANAGE_EXTERNAL_STORAGE" "$RUNNER_TEMP/badging.txt" || { echo "no shared-storage permission"; exit 1; }
+          unzip -l "$apk" | grep -q "lib/${RUST_ABI}/" || { echo "no arm64 native library in the APK"; exit 1; }
+          echo "ok: package, arm64 native library, SDK levels, NativeActivity launcher, storage permission and label are all in the APK"
+
+      - name: Stage the artifact with its SHA-256
+        run: |
+          set -euo pipefail
+          /bin/cp -f "${{ steps.apk.outputs.path }}" "$RUNNER_TEMP/$APK_NAME"
+          cd "$RUNNER_TEMP"
+          sha256sum "$APK_NAME" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordcraft-apk
+          path: |
+            ${{ runner.temp }}/wordcraft-v*.apk
+            ${{ runner.temp }}/SHA256SUMS.txt
+          if-no-files-found: error
+
+  release:
+    name: Publish the Release
+    needs: apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the release version and asset name
+        run: |
+          set -euo pipefail
+          base="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="$base-android.1"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "BASE=$base" >> "$GITHUB_ENV"
+          echo "APK_NAME=wordcraft-v$base-android-arm64.apk" >> "$GITHUB_ENV"
+
+      - name: Collect the artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wordcraft-apk
+          path: dist
+
+      - name: Write the release notes
+        # A quoted heredoc keeps the markdown's backticks literal, so the version is substituted
+        # afterwards rather than expanded by the shell.
+        run: |
+          set -euo pipefail
+          cat > notes.md << 'EOF'
+          WordCraft for Android (arm64), __VERSION__, built by GitHub Actions from this branch and signed with the maintainer's release key. `SHA256SUMS.txt` lists the checksums.
+
+          ## What it is
+          The desktop WordCraft on Android: a `NativeActivity` entry that opens the same app library as the desktop binary, with app-private storage, the in-app file browser serving every file dialog (Open, Save, Save As, Export PDF, Import), the "All files access" grant for shared storage, a launcher icon, vendored winit with Android mouse input filled in, keyboard modifiers, touch panning and long-press selection, and a 50% interface size for phones and small tablets.
+
+          ## What CI proved here
+          fmt, clippy with `-D warnings` on the app, UI and entry crates, the UI, engine, layout and entry-crate tests, layering, asset attribution, the WASM build and an `aarch64-linux-android` cross-check all pass; then the release APK is built, its signature is checked against the keystore certificate, and its package, arm64 abi, SDK levels, `NativeActivity` launcher, storage permission and app label are read back from the APK itself.
+
+          ## What it cannot prove
+          A hosted runner has no phone, so nothing here installs or drives the app. The port was device-checked by hand on a Galaxy Tab S11 (Android 16, arm64-v8a) and a Huawei MediaPad (API 31) on the earlier 0.11-based build, and re-based onto upstream v0.17.0 now; finger gestures, keyboard chords, mouse behaviour and the shared-storage grant still need a person's pass on a real device against **this signed APK**, which carries a different key than any debug build already installed.
+
+          ## Install
+          Android 10 (API 28) or newer, arm64 only: `adb install __APK__`, or sideload it. Uninstall a debug build first — a different signing key cannot upgrade it.
+          EOF
+          sed -i "s/__VERSION__/\"$VERSION\"/; s/__APK__/\"$APK_NAME\"/" notes.md
+          cat notes.md
+        env:
+          VERSION: ${{ env.VERSION }}
+          APK_NAME: ${{ env.APK_NAME }}
+
+      - name: Publish
+        # A real release is a Release, not a pre-release: --prerelease is only ever passed by a
+        # manual dispatch that explicitly asks for it. Publishing here because pushing the tag is
+        # the release decision; nothing runs on main.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          apk="$(find dist -name 'wordcraft-v*.apk' | head -n1)"
+          sums="$(find dist -name 'SHA256SUMS.txt' | head -n1)"
+          if [ -z "$apk" ]; then echo "no APK artifact" >&2; exit 1; fi
+          /bin/mv -f "$apk" "$APK_NAME"
+          if [ "$PRERELEASE" = "true" ]; then
+            gh release create "$VERSION" "$APK_NAME" "$sums" --prerelease --title "WordCraft for Android (arm64) — $VERSION (test)" --notes-file notes.md
+          else
+            gh release create "$VERSION" "$APK_NAME" "$sums" --title "WordCraft for Android (arm64) — $VERSION" --notes-file notes.md
+          fi
+          gh release view "$VERSION" --json tagName,isPrerelease,isDraft --jq '"\(.tagName) prerelease=\(.isPrerelease) draft=\(.isDraft)"'

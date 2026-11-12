@@ -118,6 +118,7 @@ Page drawing indexes text-box warp lookups by paragraph and story for the curren
 | 26 | **Minor formats**: saving MHT, Works/WordPerfect | | Word XML Document (Flat OPC) opens and saves, Word 2003 XML opens (#548) and saves (#1081, not yet checked in Word); MHT opens and documents' `w:altChunk` content is brought in | Rare | 12–23 | [file-format-parity.md](file-format-parity.md) |
 | 28 | **Dictate** | | `tools.dictate` missing | Dictation users | 8–15 + owner (speech model) | [hardware-parity.md](hardware-parity.md) |
 | 29 | **Equations**: ink equations; a copied equation pasting into Word as an editable equation, still to be confirmed (#816, #1297) | | #191 notes; long display equations wrap at operators (#326); typed `\int`, `\sum`… + Space wait for their limits, and `\int_0^1` corrects on `_`, as observed in Word for Windows on #4938 (#4917); a copy holding an equation puts MathML in HTML on the clipboard (#816), and a copy of one equation alone also its MathML in the "MathML" clipboard formats Word reads first (Windows, macOS; #1297; Word/LibreOffice paste not yet verified) | Maths-heavy documents | 2–3 | [layout-parity.md](layout-parity.md) |
+| 30 | **The Android arm64 port is source-only**: the APK launches, edits, saves and opens; every file dialog is served by the built-in browser (the app's `Documents/`, plus shared storage `/storage/emulated/0` once "All files access" is granted over JNI); a finger pans the page, a still hold is the long-press menu, a tap places the caret and a double-tap selects a word; the interface scales to 50%; a keyboard's modifiers are stamped onto each frame's key events so chords reach egui, and the vendored winit fills the Android mouse path (device-verified on the earlier 0.11-based build: a Samsung Galaxy Tab S11, Android 16, and a Huawei MediaPad, AGS5-W09 on API 31; the port re-based onto upstream v0.17.0 in 2026-11 awaits a device re-check). Missing: release signing and store packaging (`adb install` of a locally signed APK only), the "All files access" grant must be given by hand from Android's settings page, clipboard pictures stay text-only (`arboard` has no Android backend), single-instance forwarding has no IPC backend, and the update check only degrades gracefully offline | | Android is not on the project's roadmap yet — the port is additive, target-gated, and desktop behavior unchanged; the mobile port lands as stacked part-PRs | Anyone who wants WordCraft on a tablet or phone | 8–15 (release packaging, clipboard pictures, instance forwarding) | [architecture.md](architecture.md) |
 
 **Beta needs #1–#7** (~150–230 h with the stability and layout work they imply): they are the
 blocking gaps, and closing them lifts file formats, layout, stability and UI enough to take the
@@ -154,6 +155,7 @@ The same gaps grouped the way the parity documents are, for agents working in on
   GNOME or KDE session yet.
 - **File-format gaps:** #1, #2, #5, #9 (`.doc` only), #14, #19, #23, #26; embedded fonts; `w:altChunk` and sub-documents.
 - **Hardware gaps:** #6, #12, #28; scanner/Continuity Camera insert; KDE soft text (#140).
+- **Platform gaps:** #30 — the Android arm64 port (source-only: no release signing or store packaging yet; the storage grant, clipboard pictures and instance forwarding as in the ranked row).
 - **Localization gaps:** #8, #11, #16, #17; native-speaker review of every catalog (human).
 - **Stability and performance gaps:** #3, #20.
 
@@ -197,6 +199,7 @@ Page Setup's margin, paper-size and document-grid number boxes scroll long text 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-12 | minor | Gap 30: the Android arm64 port re-based onto upstream v0.17.0 — additive, target-gated, desktop behaviour unchanged |
 | 2026-11-08 | trivial | #10 narrowed: a turned inline picture with no recorded effect extent keeps its line to its frame (exchanged near a quarter turn in Word 2013+ layout), cut at the line; gap stays open |
 | 2026-11-08 | trivial | #4 narrowed: a cell's last Normal paragraph drops its contextual space after, the end-of-cell mark counting as a Normal paragraph (#5450) |
 | 2026-11-07 | trivial | Page Setup also bounds the unfocused margin display after a long numeric paste; the accepted value is retained (#5650). |
